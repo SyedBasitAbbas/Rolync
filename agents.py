@@ -83,13 +83,7 @@ class ProfilingAgent:
                 config=gen_config
             )
             
-            if response and hasattr(response, 'text') and response.text is not None:
-                return response.text.strip()
-
-            logging.warning(f"LLM response for prompt type '{'json' if is_json else 'text'}' did not contain text.")
-            if is_json:
-                return '{"error": "Model returned an empty response."}'
-            return "I'm sorry, I could not process that. The model returned an empty response."
+            return response.text.strip()
         except Exception as e:
             logging.error(f"LLM call failed: {str(e)}", exc_info=True)
             if "rate limit" in str(e).lower():
@@ -421,7 +415,7 @@ class InterviewAgent:
             )
             
             # Extract search results
-            search_data = gen_response.text if gen_response and hasattr(gen_response, 'text') and gen_response.text else ""
+            search_data = gen_response.text
             logging.info(f"Received search results for session {state.session_id} ({len(search_data)} chars)")
             
             # If search data is too short, likely no proper search was performed
@@ -458,7 +452,7 @@ class InterviewAgent:
                 )
                 
                 # Use the retry response if it's longer
-                retry_data = retry_response.text if retry_response and hasattr(retry_response, 'text') and retry_response.text else ""
+                retry_data = retry_response.text
                 if len(retry_data) > len(search_data):
                     search_data = retry_data
                     logging.info(f"Using retry search results with length {len(search_data)} chars")
@@ -604,7 +598,6 @@ class InterviewAgent:
             gen_config = types.GenerateContentConfig(
                 response_mime_type="text/plain",
                 temperature=0.4,
-                max_output_tokens=512,
             )
             
             # Call the model using client
@@ -615,14 +608,10 @@ class InterviewAgent:
                 config=gen_config
             )
             
-            if response and hasattr(response, 'text') and response.text is not None:
-                next_question = response.text.strip()
-                # Store the question in the interview state
-                interview.questions.append(next_question)
-                return next_question
-
-            logging.error("Failed to generate next question: empty response from model.")
-            return "I'm having trouble formulating my next question. Could we take a brief pause?"
+            next_question = response.text.strip()
+            # Store the question in the interview state
+            interview.questions.append(next_question)
+            return next_question
 
         except Exception as e:
             logging.error(f"Error generating next question: {e}", exc_info=True)
@@ -739,86 +728,53 @@ class InterviewAgent:
                 config=gen_config
             )
             
-            if response and hasattr(response, 'text') and response.text is not None:
-                result_text = response.text.strip()
-                cleaned_text = re.sub(r"```json\s*|\s*```", "", result_text)
+            # Process response
+            result_text = response.text.strip()
+            cleaned_text = re.sub(r"```json\s*|\s*```", "", result_text)
+            
+            try:
+                result = json.loads(cleaned_text)
                 
-                try:
-                    result = json.loads(cleaned_text)
+                # Ensure score is treated as numeric
+                if "score" in result:
+                    result["score"] = float(result.get("score", 0))
                     
-                    # Ensure score is treated as numeric
-                    if "score" in result:
-                        result["score"] = float(result.get("score", 0))
-                        
-                    # Add is_correct flag if not already present
-                    if "is_correct" not in result:
-                        result["is_correct"] = result.get("score", 0) > 0
-                        
-                    # Add metadata to the evaluation result
-                    result["question"] = question
-                    result["answer"] = answer
-                    result["difficulty"] = difficulty
-                    result["max_score"] = max_score
-                    result["timestamp"] = datetime.now(timezone.utc).isoformat()
+                # Add is_correct flag if not already present
+                if "is_correct" not in result:
+                    result["is_correct"] = result.get("score", 0) > 0
                     
-                    # Create and store a DetailedEvaluation object
-                    question_id = f"Q{len(interview.questions)}"  # This creates Q1, Q2, Q3, etc. - 1-based indexing
-                    detailed_eval = {
-                        "question_id": question_id,
-                        "score": result.get("score", 0),
-                        "strengths": result.get("strengths", []),
-                        "weaknesses": result.get("weaknesses", []),
-                        "improvement_tips": result.get("improvement_tips", []),
-                        "scoring_breakdown": result.get("scoring_breakdown", result.get("rubric_section", {}))
-                    }
-                    
-                    # Import at function level to avoid circular imports
-                    from models import DetailedEvaluation
-                    
-                    detailed_evaluation = DetailedEvaluation(**detailed_eval)
-                    state.detailed_evaluations.append(detailed_evaluation)
-                    
-                    # Log evaluation result
-                    logging.info(f"Evaluation: Score={result.get('score', 0)}/{max_score}, Difficulty={difficulty}, Correct={result.get('is_correct', False)}")
-                    logging.info(f"Added detailed evaluation with ID: {question_id}, Total evaluations: {len(state.detailed_evaluations)}")
-                    
-                    return result
-                except json.JSONDecodeError:
-                    logging.error(f"Failed to parse evaluation JSON: {cleaned_text}")
-                    default_result = {
-                        "evaluation": "The answer could not be automatically evaluated.",
-                        "feedback": "Please continue with the interview.",
-                        "score": 1,
-                        "question": question,
-                        "answer": answer,
-                        "difficulty": difficulty,
-                        "max_score": max_score,
-                        "is_correct": True,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "strengths": ["Unable to determine strengths due to evaluation error"],
-                        "weaknesses": ["Unable to determine weaknesses due to evaluation error"],
-                        "improvement_tips": ["Continue to the next question"],
-                        "scoring_breakdown": {"accuracy": 50, "completeness": 50, "clarity": 50}
-                    }
-                    
-                    # Create and store a minimal DetailedEvaluation for the failure case
-                    question_id = f"Q{len(interview.questions)}"
-                    from models import DetailedEvaluation
-                    
-                    detailed_evaluation = DetailedEvaluation(
-                        question_id=question_id,
-                        score=1,
-                        strengths=["Unable to determine strengths due to evaluation error"],
-                        weaknesses=["Unable to determine weaknesses due to evaluation error"],
-                        improvement_tips=["Continue to the next question"]
-                    )
-                    state.detailed_evaluations.append(detailed_evaluation)
-                    
-                    return default_result
-            else:
-                logging.error(f"Failed to get evaluation: empty response from model.")
-                result_text = ""
-                result = {
+                # Add metadata to the evaluation result
+                result["question"] = question
+                result["answer"] = answer
+                result["difficulty"] = difficulty
+                result["max_score"] = max_score
+                result["timestamp"] = datetime.now(timezone.utc).isoformat()
+                
+                # Create and store a DetailedEvaluation object
+                question_id = f"Q{len(interview.questions)}"  # This creates Q1, Q2, Q3, etc. - 1-based indexing
+                detailed_eval = {
+                    "question_id": question_id,
+                    "score": result.get("score", 0),
+                    "strengths": result.get("strengths", []),
+                    "weaknesses": result.get("weaknesses", []),
+                    "improvement_tips": result.get("improvement_tips", []),
+                    "scoring_breakdown": result.get("scoring_breakdown", result.get("rubric_section", {}))
+                }
+                
+                # Import at function level to avoid circular imports
+                from models import DetailedEvaluation
+                
+                detailed_evaluation = DetailedEvaluation(**detailed_eval)
+                state.detailed_evaluations.append(detailed_evaluation)
+                
+                # Log evaluation result
+                logging.info(f"Evaluation: Score={result.get('score', 0)}/{max_score}, Difficulty={difficulty}, Correct={result.get('is_correct', False)}")
+                logging.info(f"Added detailed evaluation with ID: {question_id}, Total evaluations: {len(state.detailed_evaluations)}")
+                
+                return result
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse evaluation JSON: {cleaned_text}")
+                default_result = {
                     "evaluation": "The answer could not be automatically evaluated.",
                     "feedback": "Please continue with the interview.",
                     "score": 1,
@@ -834,20 +790,20 @@ class InterviewAgent:
                     "scoring_breakdown": {"accuracy": 50, "completeness": 50, "clarity": 50}
                 }
                 
-                # Create and store a minimal DetailedEvaluation for the error case
+                # Create and store a minimal DetailedEvaluation for the failure case
                 question_id = f"Q{len(interview.questions)}"
                 from models import DetailedEvaluation
                 
                 detailed_evaluation = DetailedEvaluation(
                     question_id=question_id,
                     score=1,
-                    strengths=["Unable to determine strengths due to error"],
-                    weaknesses=["Unable to determine weaknesses due to error"],
+                    strengths=["Unable to determine strengths due to evaluation error"],
+                    weaknesses=["Unable to determine weaknesses due to evaluation error"],
                     improvement_tips=["Continue to the next question"]
                 )
                 state.detailed_evaluations.append(detailed_evaluation)
                 
-                return result
+                return default_result
         except Exception as e:
             logging.error(f"Error generating evaluation: {e}", exc_info=True)
             default_result = {
@@ -966,33 +922,25 @@ class InterviewAgent:
                 config=gen_config
             )
             
-            if response and hasattr(response, 'text') and response.text is not None:
-                result_text = response.text.strip()
-                cleaned_text = re.sub(r"```json\s*|\s*```", "", result_text)
-                
-                try:
-                    summary_data = json.loads(cleaned_text)
-                    
-                    # Store the summary in the session state
-                    state.summary_data = summary_data
-                    
-                    return json.dumps(summary_data, indent=2)
-                except json.JSONDecodeError:
-                    logging.error(f"Failed to parse summary JSON: {cleaned_text}")
-                    summary_data = {
-                        "Summary": "Failed to generate a proper summary. The interview was completed, but the summary generation encountered an error.",
-                        "Error": "JSON parsing error"
-                    }
-                    state.summary_data = summary_data
-                    return json.dumps(summary_data, indent=2)
+            # Process the response
+            result_text = response.text.strip()
+            cleaned_text = re.sub(r"```json\s*|\s*```", "", result_text)
             
-            logging.error("Failed to generate summary: empty response from model.")
-            summary_data = {
-                "Summary": "An error occurred while generating the interview summary.",
-                "Error": "Model returned an empty response."
-            }
-            state.summary_data = summary_data
-            return json.dumps(summary_data, indent=2)
+            try:
+                summary_data = json.loads(cleaned_text)
+                
+                # Store the summary in the session state
+                state.summary_data = summary_data
+                
+                return json.dumps(summary_data, indent=2)
+            except json.JSONDecodeError:
+                logging.error(f"Failed to parse summary JSON: {cleaned_text}")
+                summary_data = {
+                    "Summary": "Failed to generate a proper summary. The interview was completed, but the summary generation encountered an error.",
+                    "Error": "JSON parsing error"
+                }
+                state.summary_data = summary_data
+                return json.dumps(summary_data, indent=2)
             
         except Exception as e:
             logging.error(f"Error generating summary: {e}", exc_info=True)
@@ -1292,7 +1240,6 @@ class DoubtAgent:
             gen_config = types.GenerateContentConfig(
                 response_mime_type="application/json" if is_json else "text/plain",
                 temperature=0.2,
-                max_output_tokens=1024,
             )
             
             # Call the model using client
@@ -1303,13 +1250,7 @@ class DoubtAgent:
                 config=gen_config
             )
             
-            if response and hasattr(response, 'text') and response.text is not None:
-                return response.text.strip()
-
-            logging.warning(f"DoubtAgent LLM response for prompt type '{'json' if is_json else 'text'}' did not contain text.")
-            if is_json:
-                return '{"error": "Model returned an empty response."}'
-            return "I'm having a little trouble processing that. Could we try again?"
+            return response.text.strip()
         except Exception as e:
             logging.error(f"LLM call failed: {str(e)}", exc_info=True)
             if "rate limit" in str(e).lower():
@@ -1462,8 +1403,7 @@ class DoubtAgent:
         
         5. Be thorough in your explanation - don't just give a generic response.
         
-        Generate a short detailed, conversational response that directly answers the user's specific question.
-        Keep your response easily explainable.
+        Generate a detailed, conversational response that directly answers the user's specific question.
         Be empathetic but honest and specific about weaknesses and point deductions.
         """
         
@@ -1521,29 +1461,28 @@ class DoubtAgent:
         {json.dumps(summary)}
         
         IMPORTANT INSTRUCTIONS:
-        1. Provide a DETAILED analysis of the user's overall performance
+        1. Provide a concise, focused analysis of the user's performance
         
-        2. Be specific about where they lost marks:
-           - Identify the questions where they performed worst
-           - Explain the common patterns in their weaknesses
-           - Point out specific knowledge gaps or response issues
+        2. Clearly identify their main weaknesses:
+           - Name the lowest-scoring questions
+           - Highlight 2-3 key weakness patterns
+           - Specify the most critical knowledge gaps
         
-        3. Be direct and honest about weaknesses before discussing strengths:
-           - First explain what went wrong in detail
-           - Then acknowledge what they did well
+        3. Structure your response efficiently:
+           - First: 1-2 sentences on main improvement areas
+           - Then: 1 sentence acknowledging strengths
         
-        4. If they're asking about their overall performance, don't just give a generic "you did well" response
-           - Break down their performance by question/area
-           - Highlight specific areas that need improvement
-           - Be honest about how their performance compares to expectations
+        4. For overall performance questions:
+           - Give specific scores for their weakest areas
+           - Mention 1-2 concrete improvement suggestions
+           - Be direct about how they compare to expectations
         
-        5. If they ask why they got a specific overall score, explain:
-           - Which questions contributed most to point deductions
-           - What specific aspects of their answers led to lower scores
+        5. For score-specific questions:
+           - Name the 1-2 questions that most affected their score
+           - Briefly explain the specific issues in those answers
         
-        Generate a short detailed, conversational response that directly answers the user's specific question.
-        Keep your response easily explainable.
-        Be empathetic but honest and specific about weaknesses and point deductions.
+        Generate a brief, direct response (3-5 sentences) that answers the user's question with specific data points.
+        Be clear about improvement areas while remaining constructive.
         """
         
         # Call the LLM for a personalized response
