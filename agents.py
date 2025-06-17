@@ -1482,8 +1482,9 @@ class DoubtAgent:
            - Which questions contributed most to point deductions
            - What specific aspects of their answers led to lower scores
         
-        Generate a detailed, conversational response that directly answers the user's question about their general performance.
-        Be specific and reference the data provided. Be honest about areas for improvement while still being constructive.
+        Generate a short detailed, conversational response that directly answers the user's specific question.
+        Keep your response easily explainable.
+        Be empathetic but honest and specific about weaknesses and point deductions.
         """
         
         # Call the LLM for a personalized response
