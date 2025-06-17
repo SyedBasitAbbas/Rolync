@@ -604,6 +604,7 @@ class InterviewAgent:
             gen_config = types.GenerateContentConfig(
                 response_mime_type="text/plain",
                 temperature=0.4,
+                max_output_tokens=512,
             )
             
             # Call the model using client
@@ -1291,7 +1292,7 @@ class DoubtAgent:
             gen_config = types.GenerateContentConfig(
                 response_mime_type="application/json" if is_json else "text/plain",
                 temperature=0.2,
-                max_output_tokens=300,
+                max_output_tokens=1024,
             )
             
             # Call the model using client
