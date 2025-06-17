@@ -146,6 +146,7 @@ class SearchState(BaseModel):
     search_data: Optional[str] = None
     grounding_sources: List[GroundingSource] = Field(default_factory=list)
     web_search_queries: List[str] = Field(default_factory=list)
+    search_failed: bool = False
 
 class SessionState(BaseModel):
     """
