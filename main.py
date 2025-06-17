@@ -237,6 +237,6 @@ def shutdown_event():
 # For local development only - not used in production/Vercel
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, log_level="info", reload=False) 
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, log_level="info", reload=False) 
 
 
