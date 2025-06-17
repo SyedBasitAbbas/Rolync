@@ -152,7 +152,9 @@ class ProfilingAgent:
             is_valid, extracted_value = await self._validate_and_extract_response(current_field, user_input, state)
 
             if not is_valid:
-                reply = extracted_value # Return the clarification/error message
+                # If validation fails, combine the error with the last question to re-ask.
+                last_question = profiling.last_question or await self._generate_question(current_field, state)
+                reply = f"{extracted_value} {last_question}"
             else:
                 profiling.user_data[current_field] = extracted_value
                 next_field_index = current_field_index + 1
@@ -188,24 +190,33 @@ class InterviewAgent:
 
     async def prepare_interview(self, state: SessionState):
         """BACKGROUND TASK: Runs search agent to gather data for the interview."""
-        if state.search_state.search_data:
-            logger.info(f"Search data already exists for session {state.session_id}. Skipping search.")
-            return
-        
-        # Ensure interview state has paragraph_question_counter initialized
-        state.interview_state.paragraph_question_counter = 0
-        state.interview_state.current_paragraph_index = 0
-        
-        logger.info(f"Starting background search for session {state.session_id}...")
-        await self._search(state)
-        logger.info(f"Background search completed for session {state.session_id}")
-        save_session(state, get_user_collection())
+        try:
+            if state.search_state.search_data:
+                logger.info(f"Search data already exists for session {state.session_id}. Skipping search.")
+                return
+            
+            # Ensure interview state has paragraph_question_counter initialized
+            state.interview_state.paragraph_question_counter = 0
+            state.interview_state.current_paragraph_index = 0
+            
+            logger.info(f"Starting background search for session {state.session_id}...")
+            await self._search(state)
+            logger.info(f"Background search completed for session {state.session_id}")
+            save_session(state, get_user_collection())
+        except Exception as e:
+            logger.error(f"BACKGROUND SEARCH FAILED for session {state.session_id}: {e}", exc_info=True)
+            state.search_state.search_failed = True
+            save_session(state, get_user_collection())
 
     async def process(self, user_input: str, state: SessionState) -> str:
         """ Processes a user's answer and returns the next question or completes the interview. """
         interview = state.interview_state
         detailed_eval = None
         
+        # Check if the background search failed
+        if state.search_state.search_failed:
+            return "I'm sorry, I seem to have run into an issue while preparing for your interview. We may need to start over."
+
         # Ensure search data is available
         if not state.search_state.search_data:
             return "I'm still preparing the interview materials, please give me another moment. I'll have the first question for you shortly."
