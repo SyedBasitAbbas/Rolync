@@ -140,52 +140,29 @@ class ProfilingAgent:
         profiling = state.profiling_state
         profiling.conversation_history.append({"user": user_input})
 
-        # This logic block handles the conversation flow for profiling.
-        # It determines whether to ask the next question, validate a response,
-        # or transition to the next stage.
-
-        if not profiling.last_question:  # First turn of the conversation
-            # If it's the beginning, ask the first question.
+        if not profiling.last_question: # First turn of the conversation
             current_field = self.fields[0]
             reply = await self._generate_question(current_field, state)
-            profiling.current_field_index = 0
-
-        else:  # Subsequent turns
+        else: # Subsequent turns
             current_field_index = profiling.current_field_index
-            
-            # This check should ideally not be hit if the state transitions correctly,
-            # but it's a safeguard.
             if current_field_index >= len(self.fields):
-                state.current_stage = 'preparing_interview'
-                logger.warning(f"Profiling was already complete for session {state.session_id}, but process was called again. Forcing transition to 'preparing_interview'.")
-                return "Our profiling session is complete. I'm now preparing a short practice interview. This may take a moment. Please send 'ok' when you're ready to begin."
+                return "Our profiling session is complete. We are now moving to the interview phase."
 
             current_field = self.fields[current_field_index]
             is_valid, extracted_value = await self._validate_and_extract_response(current_field, user_input, state)
 
             if not is_valid:
-                # If the user's response is not valid, provide the clarification/error message
-                # and ask the same question again.
-                reply = extracted_value
+                reply = extracted_value # Return the clarification/error message
             else:
-                # If the response is valid, save the data and move to the next field.
                 profiling.user_data[current_field] = extracted_value
                 next_field_index = current_field_index + 1
                 profiling.current_field_index = next_field_index
 
                 if next_field_index >= len(self.fields):
-                    # If all fields are collected, transition to the new preparing stage.
-                    state.current_stage = 'preparing_interview'
-                    logger.info(f"Profiling complete for session {state.session_id}. Transitioning to 'preparing_interview' stage.")
-                    
-                    # Start the background task to prepare for the interview.
+                    state.current_stage = 'interviewing'
                     asyncio.create_task(interview_agent.prepare_interview(state))
-                    logger.info(f"Background task 'prepare_interview' started for session {state.session_id}.")
-                    
-                    # Formulate a message that informs the user to wait.
-                    reply = "Great, thanks! I have everything for your profile. I'm now preparing a short practice interview. This may take a moment. Please send 'ok' when you're ready to begin."
+                    reply = "Great, thanks! I have everything for your profile. We'll now move on to a short practice interview. I'll ask a few questions based on the role and company you mentioned. Are you ready?"
                 else:
-                    # If there are more fields to collect, generate the next question.
                     next_field = self.fields[next_field_index]
                     reply = await self._generate_question(next_field, state)
 
@@ -210,11 +187,9 @@ class InterviewAgent:
         self.model_name = "gemini-2.5-flash-preview-04-17"
 
     async def prepare_interview(self, state: SessionState):
-        """BACKGROUND TASK: Runs search agent and transitions state upon completion."""
+        """BACKGROUND TASK: Runs search agent to gather data for the interview."""
         if state.search_state.search_data:
             logger.info(f"Search data already exists for session {state.session_id}. Skipping search.")
-            state.current_stage = 'interviewing'
-            save_session(state, get_user_collection())
             return
         
         # Ensure interview state has paragraph_question_counter initialized
@@ -222,16 +197,9 @@ class InterviewAgent:
         state.interview_state.current_paragraph_index = 0
         
         logger.info(f"Starting background search for session {state.session_id}...")
-        try:
-            await self._search(state)
-            state.current_stage = 'interviewing'
-            logger.info(f"Background search completed successfully for session {state.session_id}. State transitioned to 'interviewing'.")
-        except Exception as e:
-            logger.error(f"Background search failed for session {state.session_id}: {e}", exc_info=True)
-            # Future enhancement: Add an error state here.
-        finally:
-            save_session(state, get_user_collection())
-            logger.info(f"Session {state.session_id} saved after background search task.")
+        await self._search(state)
+        logger.info(f"Background search completed for session {state.session_id}")
+        save_session(state, get_user_collection())
 
     async def process(self, user_input: str, state: SessionState) -> str:
         """ Processes a user's answer and returns the next question or completes the interview. """
@@ -240,10 +208,8 @@ class InterviewAgent:
         
         # Ensure search data is available
         if not state.search_state.search_data:
-            logger.warning(f"InterviewAgent.process called for session {state.session_id}, but search_data is not ready yet.")
             return "I'm still preparing the interview materials, please give me another moment. I'll have the first question for you shortly."
 
-        logger.info(f"InterviewAgent.process called for session {state.session_id}. Search data is available. Proceeding with interview logic.")
         # Store the user's answer if there were previous questions
         if interview.questions:
             interview.answers.append(user_input)
