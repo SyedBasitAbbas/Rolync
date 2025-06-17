@@ -40,7 +40,7 @@ class ColoredFormatter(logging.Formatter):
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.FileHandler('app.log', encoding='utf-8'), logging.StreamHandler()]
 )
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 for handler in logging.getLogger().handlers:
@@ -61,10 +61,6 @@ gemini_client = genai.Client(api_key=gemini_api_key)
 app = FastAPI()
 
 # --- API Endpoints ---
-
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the ROLync API. Please use the /docs endpoint for documentation."}
 
 @app.post("/user/chat", response_model=ChatResponse)
 async def handle_chat(request: ChatRequest):
@@ -234,7 +230,6 @@ async def handle_matching(request: MatchingRequest):
 def shutdown_event():
     close_db_connection()
 
-# For local development only - not used in production/Vercel
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
     uvicorn.run("main:app", host="0.0.0.0", port=8001, log_level="info", reload=False) 
