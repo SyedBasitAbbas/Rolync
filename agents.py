@@ -1240,6 +1240,7 @@ class DoubtAgent:
             gen_config = types.GenerateContentConfig(
                 response_mime_type="application/json" if is_json else "text/plain",
                 temperature=0.2,
+                max_tokens=300,
             )
             
             # Call the model using client
