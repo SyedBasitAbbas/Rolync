@@ -1403,7 +1403,8 @@ class DoubtAgent:
         
         5. Be thorough in your explanation - don't just give a generic response.
         
-        Generate a detailed, conversational response that directly answers the user's specific question.
+        Generate a short detailed, conversational response that directly answers the user's specific question.
+        Keep your response easily explainable.
         Be empathetic but honest and specific about weaknesses and point deductions.
         """
         
