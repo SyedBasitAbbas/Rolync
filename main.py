@@ -40,7 +40,7 @@ class ColoredFormatter(logging.Formatter):
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[logging.FileHandler('app.log', encoding='utf-8'), logging.StreamHandler()]
+    handlers=[logging.StreamHandler()]
 )
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 for handler in logging.getLogger().handlers:
@@ -232,6 +232,6 @@ def shutdown_event():
 
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, log_level="info", reload=False) 
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, log_level="info", reload=False) 
 
 
