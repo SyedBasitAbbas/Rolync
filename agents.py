@@ -398,103 +398,28 @@ class InterviewAgent:
                 types.Tool(google_search=types.GoogleSearch()),
             ]
             
-            gen_config = types.GenerateContentConfig(
+            # Make the remote call in a separate thread to avoid blocking
+            response = await asyncio.to_thread(
+                client.generate_content,
+                search_prompt,
                 tools=tools,
-                response_mime_type="text/plain",
-                temperature=0.2,
-                max_output_tokens=4000
             )
+
+            # Extract the response text
+            response_text = "".join([part.text for part in response.parts])
             
-            # Send request to the model using the client directly
-            logging.info(f"Sending search request to Gemini for session {state.session_id}...")
+            # Store the result in the session state
+            state.search_state.search_data = response_text
             
-            # Create contents with the specific instruction to use Google Search
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=search_prompt),
-                    ],
-                ),
-            ]
-            
-            gen_response = await asyncio.to_thread(
-                client.models.generate_content,
-                model="gemini-2.5-flash-preview-04-17",
-                contents=contents,
-                config=gen_config
-            )
-            
-            # Extract search results
-            search_data = gen_response.text
-            logging.info(f"Received search results for session {state.session_id} ({len(search_data)} chars)")
-            
-            # If search data is too short, likely no proper search was performed
-            if len(search_data) < 500:
-                logging.warning(f"Search results suspiciously short ({len(search_data)} chars). May not have used Google Search.")
-                # InterviewAgent prompt: Fallback search prompt with explicit search queries
-                retry_prompt = f"""
-                YOU MUST USE THE GOOGLE SEARCH TOOL for this task. Run the following searches:
-                
-                1. "{company} company information"
-                2. "{company} {job_title} job requirements"
-                3. "{company} recent news"
-                4. "{job_title} interview questions"
-                
-                For each search, provide the results you find, summarized in a clear format.
-                Do not proceed without using the Google Search tool.
-                """
-                
-                contents = [
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_text(text=retry_prompt),
-                        ],
-                    ),
-                ]
-                
-                logging.info(f"Retrying search with more explicit instructions for session {state.session_id}")
-                retry_response = await asyncio.to_thread(
-                    client.models.generate_content,
-                    model="gemini-2.5-flash-preview-04-17",
-                    contents=contents,
-                    config=gen_config
-                )
-                
-                # Use the retry response if it's longer
-                retry_data = retry_response.text
-                if len(retry_data) > len(search_data):
-                    search_data = retry_data
-                    logging.info(f"Using retry search results with length {len(search_data)} chars")
-            
-            # Store the search data in the session state
-            state.search_state.search_data = search_data
-            
-            # If we have grounding metadata, we can save sources too
-            if gen_response.candidates and hasattr(gen_response.candidates[0], 'grounding_metadata') and gen_response.candidates[0].grounding_metadata:
-                gm = gen_response.candidates[0].grounding_metadata
-                
-                if hasattr(gm, 'web_search_queries') and gm.web_search_queries:
-                    state.search_state.web_search_queries = list(gm.web_search_queries)
-                    logging.info(f"Saved {len(state.search_state.web_search_queries)} web search queries")
-                    
-                if hasattr(gm, 'grounding_chunks') and gm.grounding_chunks:
-                    sources = []
-                    for chunk in gm.grounding_chunks:
-                        if hasattr(chunk, 'web') and chunk.web:
-                            uri = getattr(chunk.web, 'uri', 'N/A')
-                            title = getattr(chunk.web, 'title', 'N/A')
-                            sources.append({"title": title, "uri": uri})
-                    state.search_state.grounding_sources = sources
-                    logging.info(f"Saved {len(sources)} grounding sources")
-                    
-            return "Search completed successfully."
-            
+            # Log the successful completion and the stored data
+            logger.info(f"Background search successful for session {state.session_id}. Stored {len(response_text)} characters.")
+
         except Exception as e:
-            logging.error(f"Error in search: {e}", exc_info=True)
-            state.search_state.search_data = "Error: Could not retrieve interview preparation data."
-            return "I encountered an error while searching for information. Let's continue with the interview."
+            logger.error(f"Error during Gemini API call in _search: {e}", exc_info=True)
+            state.search_state.search_failed = True
+        
+        # Save session regardless of outcome
+        save_session(state, get_user_collection())
 
     async def _ask_next_question(self, state: SessionState) -> str:
         """Generate the next interview question based on search data and conversation history."""
