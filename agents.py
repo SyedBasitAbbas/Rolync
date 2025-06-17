@@ -398,8 +398,9 @@ class InterviewAgent:
                 types.Tool(google_search=types.GoogleSearch()),
             ]
             
-            # Make the remote call
-            response = client.generate_content(
+            # Make the remote call in a separate thread to avoid blocking
+            response = await asyncio.to_thread(
+                client.generate_content,
                 search_prompt,
                 tools=tools,
             )
