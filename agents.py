@@ -1386,25 +1386,25 @@ class DoubtAgent:
         Scoring breakdown: {json.dumps(matching_eval.scoring_breakdown) if matching_eval.scoring_breakdown else "Not available"}
         
         IMPORTANT INSTRUCTIONS:
-        1. If the user is asking about mark deductions or why they didn't get full marks, provide a DETAILED explanation of:
-           - The specific points they missed or got wrong
-           - The exact reasons why marks were deducted
-           - Which specific parts of their answer were incomplete or incorrect
-           - How their answer differed from what was expected
+        1. Explain mark deductions concisely:
+           - Identify specific missed points
+           - State exact deduction reasons
+           - Highlight incomplete/incorrect parts
+           - Compare with expected answer
         
-        2. Be direct and honest about weaknesses before discussing improvements:
-           - First explain what went wrong in detail
-           - Then suggest how it could have been better
-           - Use specific examples from their answer to illustrate problems
+        2. Address weaknesses directly:
+           - Explain errors concisely
+           - Provide improvement suggestions
+           - Use examples from their answer
         
-        3. If they received a partial score (like 1.9/2), explain precisely what small element cost them that 0.1 point
+        3. For partial scores, specify exactly what cost them points
         
-        4. Reference the scoring breakdown components (accuracy, completeness, clarity) to explain where points were lost
+        4. Reference scoring components (accuracy, completeness, clarity)
         
-        5. Be thorough in your explanation - don't just give a generic response.
+        5. Be concise but thorough
         
-        Generate a detailed, conversational response that directly answers the user's specific question.
-        Be empathetic but honest and specific about weaknesses and point deductions.
+        Provide a direct, specific response to the user's question.
+        Be honest about weaknesses while remaining empathetic.
         """
         
         logging.info(f"Generated prompt for question {question_id}")
