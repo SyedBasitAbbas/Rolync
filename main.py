@@ -62,6 +62,10 @@ app = FastAPI()
 
 # --- API Endpoints ---
 
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the ROLync API. Please use the /docs endpoint for documentation."}
+
 @app.post("/user/chat", response_model=ChatResponse)
 async def handle_chat(request: ChatRequest):
     """ Main chat endpoint. Manages the conversation flow based on the session's current stage. """
@@ -230,6 +234,7 @@ async def handle_matching(request: MatchingRequest):
 def shutdown_event():
     close_db_connection()
 
+# For local development only - not used in production/Vercel
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
     uvicorn.run("main:app", host="127.0.0.1", port=8001, log_level="info", reload=False) 
