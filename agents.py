@@ -152,9 +152,7 @@ class ProfilingAgent:
             is_valid, extracted_value = await self._validate_and_extract_response(current_field, user_input, state)
 
             if not is_valid:
-                # If validation fails, combine the error with the last question to re-ask.
-                last_question = profiling.last_question or await self._generate_question(current_field, state)
-                reply = f"{extracted_value} {last_question}"
+                reply = extracted_value # Return the clarification/error message
             else:
                 profiling.user_data[current_field] = extracted_value
                 next_field_index = current_field_index + 1
@@ -190,33 +188,24 @@ class InterviewAgent:
 
     async def prepare_interview(self, state: SessionState):
         """BACKGROUND TASK: Runs search agent to gather data for the interview."""
-        try:
-            if state.search_state.search_data:
-                logger.info(f"Search data already exists for session {state.session_id}. Skipping search.")
-                return
-            
-            # Ensure interview state has paragraph_question_counter initialized
-            state.interview_state.paragraph_question_counter = 0
-            state.interview_state.current_paragraph_index = 0
-            
-            logger.info(f"Starting background search for session {state.session_id}...")
-            await self._search(state)
-            logger.info(f"Background search completed for session {state.session_id}")
-            save_session(state, get_user_collection())
-        except Exception as e:
-            logger.error(f"BACKGROUND SEARCH FAILED for session {state.session_id}: {e}", exc_info=True)
-            state.search_state.search_failed = True
-            save_session(state, get_user_collection())
+        if state.search_state.search_data:
+            logger.info(f"Search data already exists for session {state.session_id}. Skipping search.")
+            return
+        
+        # Ensure interview state has paragraph_question_counter initialized
+        state.interview_state.paragraph_question_counter = 0
+        state.interview_state.current_paragraph_index = 0
+        
+        logger.info(f"Starting background search for session {state.session_id}...")
+        await self._search(state)
+        logger.info(f"Background search completed for session {state.session_id}")
+        save_session(state, get_user_collection())
 
     async def process(self, user_input: str, state: SessionState) -> str:
         """ Processes a user's answer and returns the next question or completes the interview. """
         interview = state.interview_state
         detailed_eval = None
         
-        # Check if the background search failed
-        if state.search_state.search_failed:
-            return "I'm sorry, I seem to have run into an issue while preparing for your interview. We may need to start over."
-
         # Ensure search data is available
         if not state.search_state.search_data:
             return "I'm still preparing the interview materials, please give me another moment. I'll have the first question for you shortly."
@@ -398,28 +387,103 @@ class InterviewAgent:
                 types.Tool(google_search=types.GoogleSearch()),
             ]
             
-            # Make the remote call in a separate thread to avoid blocking
-            response = await asyncio.to_thread(
-                client.generate_content,
-                search_prompt,
+            gen_config = types.GenerateContentConfig(
                 tools=tools,
+                response_mime_type="text/plain",
+                temperature=0.2,
+                max_output_tokens=4000
             )
-
-            # Extract the response text
-            response_text = "".join([part.text for part in response.parts])
             
-            # Store the result in the session state
-            state.search_state.search_data = response_text
+            # Send request to the model using the client directly
+            logging.info(f"Sending search request to Gemini for session {state.session_id}...")
             
-            # Log the successful completion and the stored data
-            logger.info(f"Background search successful for session {state.session_id}. Stored {len(response_text)} characters.")
-
+            # Create contents with the specific instruction to use Google Search
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=search_prompt),
+                    ],
+                ),
+            ]
+            
+            gen_response = await asyncio.to_thread(
+                client.models.generate_content,
+                model="gemini-2.5-flash-preview-04-17",
+                contents=contents,
+                config=gen_config
+            )
+            
+            # Extract search results
+            search_data = gen_response.text
+            logging.info(f"Received search results for session {state.session_id} ({len(search_data)} chars)")
+            
+            # If search data is too short, likely no proper search was performed
+            if len(search_data) < 500:
+                logging.warning(f"Search results suspiciously short ({len(search_data)} chars). May not have used Google Search.")
+                # InterviewAgent prompt: Fallback search prompt with explicit search queries
+                retry_prompt = f"""
+                YOU MUST USE THE GOOGLE SEARCH TOOL for this task. Run the following searches:
+                
+                1. "{company} company information"
+                2. "{company} {job_title} job requirements"
+                3. "{company} recent news"
+                4. "{job_title} interview questions"
+                
+                For each search, provide the results you find, summarized in a clear format.
+                Do not proceed without using the Google Search tool.
+                """
+                
+                contents = [
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(text=retry_prompt),
+                        ],
+                    ),
+                ]
+                
+                logging.info(f"Retrying search with more explicit instructions for session {state.session_id}")
+                retry_response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model="gemini-2.5-flash-preview-04-17",
+                    contents=contents,
+                    config=gen_config
+                )
+                
+                # Use the retry response if it's longer
+                retry_data = retry_response.text
+                if len(retry_data) > len(search_data):
+                    search_data = retry_data
+                    logging.info(f"Using retry search results with length {len(search_data)} chars")
+            
+            # Store the search data in the session state
+            state.search_state.search_data = search_data
+            
+            # If we have grounding metadata, we can save sources too
+            if gen_response.candidates and hasattr(gen_response.candidates[0], 'grounding_metadata') and gen_response.candidates[0].grounding_metadata:
+                gm = gen_response.candidates[0].grounding_metadata
+                
+                if hasattr(gm, 'web_search_queries') and gm.web_search_queries:
+                    state.search_state.web_search_queries = list(gm.web_search_queries)
+                    logging.info(f"Saved {len(state.search_state.web_search_queries)} web search queries")
+                    
+                if hasattr(gm, 'grounding_chunks') and gm.grounding_chunks:
+                    sources = []
+                    for chunk in gm.grounding_chunks:
+                        if hasattr(chunk, 'web') and chunk.web:
+                            uri = getattr(chunk.web, 'uri', 'N/A')
+                            title = getattr(chunk.web, 'title', 'N/A')
+                            sources.append({"title": title, "uri": uri})
+                    state.search_state.grounding_sources = sources
+                    logging.info(f"Saved {len(sources)} grounding sources")
+                    
+            return "Search completed successfully."
+            
         except Exception as e:
-            logger.error(f"Error during Gemini API call in _search: {e}", exc_info=True)
-            state.search_state.search_failed = True
-        
-        # Save session regardless of outcome
-        save_session(state, get_user_collection())
+            logging.error(f"Error in search: {e}", exc_info=True)
+            state.search_state.search_data = "Error: Could not retrieve interview preparation data."
+            return "I encountered an error while searching for information. Let's continue with the interview."
 
     async def _ask_next_question(self, state: SessionState) -> str:
         """Generate the next interview question based on search data and conversation history."""
@@ -1339,8 +1403,7 @@ class DoubtAgent:
         
         5. Be thorough in your explanation - don't just give a generic response.
         
-        Generate a short detailed, conversational response that directly answers the user's specific question.
-        Keep your response easily explainable.
+        Generate a detailed, conversational response that directly answers the user's specific question.
         Be empathetic but honest and specific about weaknesses and point deductions.
         """
         
