@@ -4,9 +4,7 @@ import logging
 import uvicorn
 from google import genai
 from google.genai import types
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timezone
@@ -14,6 +12,7 @@ from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field
 import json
 import re
+from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables from .env file in the V38 directory
 load_dotenv(Path(__file__).parent / ".env")
@@ -51,11 +50,6 @@ for handler in logging.getLogger().handlers:
 
 logger = logging.getLogger(__name__)
 
-# Log environment variables (for debugging)
-port_env = os.getenv("PORT", "Not set")
-logger.info(f"PORT environment variable: {port_env}")
-logger.info(f"Environment variables: {os.environ.keys()}")
-
 # --- Gemini API Setup ---
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 if not gemini_api_key:
@@ -67,31 +61,13 @@ gemini_client = genai.Client(api_key=gemini_api_key)
 # --- FastAPI App Initialization ---
 app = FastAPI()
 
-# --- CORS Configuration ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],  # Restrict this in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- Middleware for Request Logging ---
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"Request: {request.method} {request.url}")
-    try:
-        response = await call_next(request)
-        logger.info(f"Response status: {response.status_code}")
-        return response
-    except Exception as e:
-        logger.error(f"Request failed: {str(e)}", exc_info=True)
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-# --- Health Check Endpoint ---
-@app.get("/health")
-def health_check():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 # --- API Endpoints ---
 
@@ -267,13 +243,10 @@ async def handle_matching(request: MatchingRequest):
 def shutdown_event():
     close_db_connection()
 
-# For local development and production
+# For local development only - not used in production/Vercel
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
-    # Get port from environment variable (Railway injects this) or use default
     port = int(os.getenv("PORT", 8001))
-    logger.info(f"Server will listen on port {port}")
-    # Use the exact format recommended by Railway for Uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info", reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info") 
 
 
