@@ -5,6 +5,7 @@ import uvicorn
 from google import genai
 from google.genai import types
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ class ColoredFormatter(logging.Formatter):
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[logging.FileHandler('app.log', encoding='utf-8'), logging.StreamHandler()]
+    handlers=[logging.StreamHandler()]
 )
 logging.getLogger("pymongo").setLevel(logging.WARNING)
 for handler in logging.getLogger().handlers:
@@ -60,7 +61,21 @@ gemini_client = genai.Client(api_key=gemini_api_key)
 # --- FastAPI App Initialization ---
 app = FastAPI()
 
+# --- CORS Middleware Setup ---
+# This allows the frontend to communicate with the backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 # --- API Endpoints ---
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the ROLync API. Please use the /docs endpoint for documentation."}
 
 @app.post("/user/chat", response_model=ChatResponse)
 async def handle_chat(request: ChatRequest):
@@ -230,8 +245,9 @@ async def handle_matching(request: MatchingRequest):
 def shutdown_event():
     close_db_connection()
 
+# For local development only - not used in production/Vercel
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, log_level="info", reload=False) 
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, log_level="info", reload=False) 
 
 
