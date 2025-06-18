@@ -4,8 +4,9 @@ import logging
 import uvicorn
 from google import genai
 from google.genai import types
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timezone
@@ -50,6 +51,11 @@ for handler in logging.getLogger().handlers:
 
 logger = logging.getLogger(__name__)
 
+# Log environment variables (for debugging)
+port_env = os.getenv("PORT", "Not set")
+logger.info(f"PORT environment variable: {port_env}")
+logger.info(f"Environment variables: {os.environ.keys()}")
+
 # --- Gemini API Setup ---
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 if not gemini_api_key:
@@ -69,6 +75,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- Middleware for Request Logging ---
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Response status: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request failed: {str(e)}", exc_info=True)
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+# --- Health Check Endpoint ---
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "timestamp": datetime.now().isoformat()}
 
 # --- API Endpoints ---
 
