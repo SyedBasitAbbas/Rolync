@@ -244,11 +244,13 @@ async def handle_matching(request: MatchingRequest):
 def shutdown_event():
     close_db_connection()
 
-# For local development only - not used in production/Vercel
+# For local development and production
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
-    # Get port from environment variable or use default
+    # Get port from environment variable (Railway injects this) or use default
     port = int(os.getenv("PORT", 8001))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info", reload=False) 
+    logger.info(f"Server will listen on port {port}")
+    # Use the exact format recommended by Railway for Uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info", reload=False)
 
 
