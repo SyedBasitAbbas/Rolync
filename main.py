@@ -62,11 +62,19 @@ gemini_client = genai.Client(api_key=gemini_api_key)
 app = FastAPI()
 
 # --- CORS Middleware Setup ---
-# This allows the frontend to communicate with the backend
+# This allows the frontend to communicate with the backend.
+# We explicitly list the origins that are allowed to connect.
+origins = [
+    "http://localhost",
+    "http://localhost:3000",
+    "http://localhost:5173", # Common for Vite
+    "https://rolync-production.up.railway.app" # Your production URL
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=False,
+    allow_origins=origins,  # Allows specific origins
+    allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
