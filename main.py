@@ -74,7 +74,7 @@ origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,  # Allows specific origins
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
@@ -259,4 +259,3 @@ if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8001, log_level="info", reload=False) 
 
 
- 
