@@ -5,7 +5,6 @@ import uvicorn
 from google import genai
 from google.genai import types
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timezone
@@ -61,125 +60,109 @@ gemini_client = genai.Client(api_key=gemini_api_key)
 # --- FastAPI App Initialization ---
 app = FastAPI()
 
-# --- CORS Middleware Setup ---
-# Allow all origins for simplicity
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
-    allow_credentials=False,
-    allow_methods=["*"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers
-)
-
 # --- API Endpoints ---
 
 @app.get("/")
 def read_root():
-    logger.info("Root endpoint called")
     return {"message": "Welcome to the ROLync API. Please use the /docs endpoint for documentation."}
 
 @app.post("/user/chat", response_model=ChatResponse)
 async def handle_chat(request: ChatRequest):
     """ Main chat endpoint. Manages the conversation flow based on the session's current stage. """
-    try:
-        logger.info(f"Chat request received: {request}")
-        user_collection = get_user_collection()
-        session = get_session(request.session_id, user_collection)
-        logger.info(f"Chat request for session '{session.session_id}' in stage '{session.current_stage}'")
+    user_collection = get_user_collection()
+    session = get_session(request.session_id, user_collection)
+    logger.info(f"Chat request for session '{session.session_id}' in stage '{session.current_stage}'")
 
-        bot_reply = ""
+    bot_reply = ""
+    
+    if session.current_stage == 'profiling':
+        bot_reply = await profiling_agent.process(request.user_input, session)
+    elif session.current_stage == 'interviewing':
+        if not session.interview_state.conversation_history:
+             logger.info(f"First message in interview stage for session {session.session_id}: '{request.user_input}'")
         
-        if session.current_stage == 'profiling':
-            bot_reply = await profiling_agent.process(request.user_input, session)
-        elif session.current_stage == 'interviewing':
-            if not session.interview_state.conversation_history:
-                 logger.info(f"First message in interview stage for session {session.session_id}: '{request.user_input}'")
+        # Store the previous session stage to detect transitions
+        previous_stage = session.current_stage
+        
+        # Process the user's message
+        bot_reply = await interview_agent.process(request.user_input, session)
+        
+        # Check if this was the final answer that triggered completion
+        if previous_stage == 'interviewing' and session.current_stage == 'doubts':
+            logger.info(f"Detected transition from interviewing to doubts stage for session {session.session_id}")
             
-            # Store the previous session stage to detect transitions
-            previous_stage = session.current_stage
-            
-            # Process the user's message
-            bot_reply = await interview_agent.process(request.user_input, session)
-            
-            # Check if this was the final answer that triggered completion
-            if previous_stage == 'interviewing' and session.current_stage == 'doubts':
-                logger.info(f"Detected transition from interviewing to doubts stage for session {session.session_id}")
-                
-                # Check if matches are already present
-                if session.matches:
-                    logger.info(f"Session already has {len(session.matches)} matches - no need to generate")
-                else:
-                    # Generate matches immediately
-                    logger.info(f"Interview completed, generating matches immediately for session {session.session_id}")
-                    matches = await interview_agent._find_matches(session)
-                    
-                    if matches:
-                        # Set matches in session state
-                        session.matches = matches
-                        logger.info(f"Generated {len(matches)} matches for session {session.session_id}")
-                        
-                        # Force save directly to MongoDB
-                        update_result = user_collection.update_one(
-                            {"session_id": session.session_id},
-                            {"$set": {
-                                "matches": matches,
-                                "current_stage": "doubts"
-                            }}
-                        )
-                        logger.info(f"Direct MongoDB update result: modified_count={update_result.modified_count}")
-                        
-                        # Verify the update
-                        verification = user_collection.find_one({"session_id": session.session_id})
-                        if verification and "matches" in verification:
-                            matches_in_db = verification["matches"]
-                            logger.info(f"Verification: Found {len(matches_in_db)} matches in UserDataCollection")
-                        else:
-                            logger.error(f"Verification failed: Matches not found in UserDataCollection after update")
-        elif session.current_stage == 'doubts':
-            # Initialize doubt_session_start if not set
-            if not session.doubt_session_start:
-                session.doubt_session_start = datetime.now(timezone.utc)
-            
-            # Check if rate limit has been reached
-            if session.doubt_queries_count >= session.doubt_queries_limit:
-                bot_reply = "You've reached the maximum number of follow-up questions for this session."
+            # Check if matches are already present
+            if session.matches:
+                logger.info(f"Session already has {len(session.matches)} matches - no need to generate")
             else:
-                # Store user's question in conversation history
-                session.doubt_conversation_history.append({"role": "user", "content": request.user_input})
+                # Generate matches immediately
+                logger.info(f"Interview completed, generating matches immediately for session {session.session_id}")
+                matches = await interview_agent._find_matches(session)
                 
-                # Process the question with DoubtAgent
-                session.doubt_queries_count += 1
-                bot_reply = await doubt_agent.process(request.user_input, session)
-                
-                # Store agent's response in conversation history
-                session.doubt_conversation_history.append({"role": "assistant", "content": bot_reply})
-                
-                # Log the query count
-                logger.info(f"Session {session.session_id} doubt query {session.doubt_queries_count}/{session.doubt_queries_limit}")
-                logger.info(f"Doubt conversation history now contains {len(session.doubt_conversation_history)} messages")
-        else: # 'summary' or 'complete'
-            bot_reply = "Our interview session is complete. You can ask questions about your evaluation."
+                if matches:
+                    # Set matches in session state
+                    session.matches = matches
+                    logger.info(f"Generated {len(matches)} matches for session {session.session_id}")
+                    
+                    # Force save directly to MongoDB
+                    update_result = user_collection.update_one(
+                        {"session_id": session.session_id},
+                        {"$set": {
+                            "matches": matches,
+                            "current_stage": "doubts"
+                        }}
+                    )
+                    logger.info(f"Direct MongoDB update result: modified_count={update_result.modified_count}")
+                    
+                    # Verify the update
+                    verification = user_collection.find_one({"session_id": session.session_id})
+                    if verification and "matches" in verification:
+                        matches_in_db = verification["matches"]
+                        logger.info(f"Verification: Found {len(matches_in_db)} matches in UserDataCollection")
+                    else:
+                        logger.error(f"Verification failed: Matches not found in UserDataCollection after update")
+    elif session.current_stage == 'doubts':
+        # Initialize doubt_session_start if not set
+        if not session.doubt_session_start:
+            session.doubt_session_start = datetime.now(timezone.utc)
+        
+        # Check if rate limit has been reached
+        if session.doubt_queries_count >= session.doubt_queries_limit:
+            bot_reply = "You've reached the maximum number of follow-up questions for this session."
+        else:
+            # Store user's question in conversation history
+            session.doubt_conversation_history.append({"role": "user", "content": request.user_input})
             
-            # If stage is 'complete' and should be 'doubts', fix it
-            if session.current_stage == 'complete' and session.summary_data:
-                logger.info(f"Correcting session stage from 'complete' to 'doubts' for session {session.session_id}")
-                session.current_stage = 'doubts'
-                
-                # Direct update to ensure stage is fixed
-                user_collection.update_one(
-                    {"session_id": session.session_id},
-                    {"$set": {"current_stage": "doubts"}}
-                )
+            # Process the question with DoubtAgent
+            session.doubt_queries_count += 1
+            bot_reply = await doubt_agent.process(request.user_input, session)
+            
+            # Store agent's response in conversation history
+            session.doubt_conversation_history.append({"role": "assistant", "content": bot_reply})
+            
+            # Log the query count
+            logger.info(f"Session {session.session_id} doubt query {session.doubt_queries_count}/{session.doubt_queries_limit}")
+            logger.info(f"Doubt conversation history now contains {len(session.doubt_conversation_history)} messages")
+    else: # 'summary' or 'complete'
+        bot_reply = "Our interview session is complete. You can ask questions about your evaluation."
+        
+        # If stage is 'complete' and should be 'doubts', fix it
+        if session.current_stage == 'complete' and session.summary_data:
+            logger.info(f"Correcting session stage from 'complete' to 'doubts' for session {session.session_id}")
+            session.current_stage = 'doubts'
+            
+            # Direct update to ensure stage is fixed
+            user_collection.update_one(
+                {"session_id": session.session_id},
+                {"$set": {"current_stage": "doubts"}}
+            )
 
-        # Save session and ensure 'matches' field is properly set in MongoDB
-        if session.matches:
-            logger.info(f"Ensuring {len(session.matches)} matches are saved in UserDataCollection")
-            
-        save_session(session, user_collection)
-        return ChatResponse(session_id=session.session_id, message=bot_reply)
-    except Exception as e:
-        logger.error(f"Error in chat endpoint: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing chat request: {str(e)}")
+    # Save session and ensure 'matches' field is properly set in MongoDB
+    if session.matches:
+        logger.info(f"Ensuring {len(session.matches)} matches are saved in UserDataCollection")
+        
+    save_session(session, user_collection)
+    return ChatResponse(session_id=session.session_id, message=bot_reply)
 
 @app.get("/user/evaluation/{session_id}/{question_id}", response_model=DetailedEvaluation)
 async def get_evaluation_details(session_id: str, question_id: str):
@@ -247,12 +230,6 @@ async def handle_matching(request: MatchingRequest):
         logger.error(f"Error in matching endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error processing matching request: {str(e)}")
 
-@app.get("/test")
-def test_endpoint():
-    """Simple test endpoint to check if the server is responding."""
-    logger.info("Test endpoint called")
-    return {"status": "ok", "message": "API server is running"}
-
 @app.on_event("shutdown")
 def shutdown_event():
     close_db_connection()
@@ -260,10 +237,6 @@ def shutdown_event():
 # For local development only - not used in production/Vercel
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
-    # The host must be '0.0.0.0' to be accessible from outside the container
-    # Railway specifically uses PORT=8080, so we'll default to that if no PORT env var is set
-    port = int(os.getenv("PORT", 8080))
-    logger.info(f"Starting server on port {port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info", reload=False) 
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, log_level="info", reload=False) 
 
 
