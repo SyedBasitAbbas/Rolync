@@ -68,7 +68,15 @@ origins = [
     "http://localhost",
     "http://localhost:3000",
     "http://localhost:5173", # Common for Vite
-    "https://rolync-production.up.railway.app" # Your production URL
+    "https://rolync-production.up.railway.app", # Your production URL
+    "https://rolync-frontend.vercel.app", # Example frontend URL on Vercel
+    "https://rolync.vercel.app", # Another possible frontend URL
+    "https://rolync.netlify.app", # Example frontend URL on Netlify
+    "https://rolync-react.vercel.app", # Another possible frontend URL
+    "http://127.0.0.1:5173", # Vite local dev with IP
+    "http://127.0.0.1:3000", # React local dev with IP
+    "https://rolync-marketplace.vercel.app", # Another possible frontend URL
+    "https://rolync-frontend-git-main.vercel.app" # Vercel preview URL pattern
 ]
 
 app.add_middleware(
