@@ -5,6 +5,7 @@ import uvicorn
 from google import genai
 from google.genai import types
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from pathlib import Path
 from datetime import datetime, timezone
@@ -59,6 +60,15 @@ gemini_client = genai.Client(api_key=gemini_api_key)
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
+
+# --- CORS Configuration ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- API Endpoints ---
 
