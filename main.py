@@ -261,8 +261,9 @@ def shutdown_event():
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
     # The host must be '0.0.0.0' to be accessible from outside the container
-    # The port is read from the PORT environment variable for compatibility with hosting platforms like Railway
-    port = int(os.getenv("PORT", 8001))
+    # Railway specifically uses PORT=8080, so we'll default to that if no PORT env var is set
+    port = int(os.getenv("PORT", 8080))
+    logger.info(f"Starting server on port {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info", reload=False) 
 
 
