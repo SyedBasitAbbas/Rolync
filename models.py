@@ -170,6 +170,9 @@ class SessionState(BaseModel):
     doubt_queries_limit: int = 3
     doubt_session_start: Optional[datetime] = None
     doubt_conversation_history: List[Dict[str, str]] = Field(default_factory=list)
+    
+    # Field to store pending messages when search data isn't ready
+    pending_messages: List[str] = Field(default_factory=list)
 
     def update_timestamp(self):
         self.last_updated = datetime.now(timezone.utc) 
