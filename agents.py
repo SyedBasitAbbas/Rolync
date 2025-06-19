@@ -72,7 +72,7 @@ class ProfilingAgent:
             # Configure generation parameters
             gen_config = types.GenerateContentConfig(
                 response_mime_type="application/json" if is_json else "text/plain",
-                temperature=0.2,
+                temperature=0,
             )
             
             # Call the model using client
@@ -90,71 +90,141 @@ class ProfilingAgent:
                 return '{"error": "API rate limit exceeded. Please try again in a moment."}' if is_json else "I'm currently experiencing high demand. Could you try again in a moment?"
             return '{"error": "Failed to get a valid response from the model."}' if is_json else "I'm having a little trouble processing that. Could we try again?"
 
-    async def _validate_and_extract_response(self, field: str, response: str, state: SessionState) -> tuple[bool, str]:
-        """Validates and extracts the user's response for a given field using an LLM call."""
-        # ProfilingAgent prompt: Validates user responses for profile fields
+    async def _validate_and_extract_response(self, field: str, response: str, state: SessionState) -> dict:
+        """
+        Validates user response, extracts data, and detects intent (e.g., clarification questions).
+        Returns a dictionary with intent, validity, extracted value, and a generated AI response.
+        """
+        conversation_history = state.profiling_state.conversation_history
+        formatted_history = ""
+        if len(conversation_history) > 1:
+            formatted_history = "Previous conversation:\n"
+            for entry in conversation_history[-10:]:
+                if "user" in entry: formatted_history += f"User: {entry['user']}\n"
+                if "assistant" in entry: formatted_history += f"Assistant: {entry['assistant']}\n"
+        
         prompt = f"""
-        You are a data validator. The user was asked for their '{field.replace('_', ' ')}'.
-        User's response: "{response}"
-        Previous Question: "{state.profiling_state.last_question}"
-        Current collected data: {json.dumps(state.profiling_state.user_data)}
+        You are an intelligent conversational AI assistant helping a user build their professional profile.
 
-        Determine if the response is a valid answer for the '{field}' field.
-        - 'name': Must be a realistic human name.
-        - 'target_company': Must be a plausible company name.
-        - 'job_title': Must be a plausible job title.
-        - 'user_experience': Must be a descriptive summary. Reject very short or irrelevant answers like "yes" or "ok".
-        - 'user_long_term_objective': Must be a plausible career goal.
+        **CONTEXT:**
+        - You just asked the user for: "{state.profiling_state.last_question}" (which corresponds to the '{field.replace('_', ' ')}' field).
+        - The user's latest response is: "{response}"
+        - Here is the recent conversation history:
+        {formatted_history}
+        - Here is the data collected so far: {json.dumps(state.profiling_state.user_data)}
 
-        Return a JSON object with this exact structure:
-        {{"is_valid": boolean, "extracted_value": "the extracted information or an error message if invalid"}}
+        **YOUR TASKS:**
+
+        1.  **Analyze Intent**: First, determine the user's primary intent. Choose one:
+            *   `answering`: The user is providing information directly related to the '{field}' you asked for.
+            *   `clarification`: The user is asking a question to better understand what information you need (e.g., "what do you mean?", "what kind of background?").
+            *   `unrelated`: The user's response is off-topic or a general question not about the current field.
+
+        2.  **Act Based on Intent**:
+            *   **If intent is `answering`**:
+                - **Synthesize & Extract**: THIS IS A CRITICAL STEP. Review the user's latest response in the context of the entire conversation history. You MUST combine information to form the most complete value. For example, if the history mentions the user is interested in a "Data Scientist" role and their latest response is "Senior", you must synthesize this to extract "Senior Data Scientist" for the `job_title` field.
+                - **Validate**: Determine if the synthesized value is a plausible and sufficient answer for the '{field}' field.
+                - **Create Response**: If the answer is invalid (e.g., too short, irrelevant), create a helpful `ai_response` explaining what you need. If it's valid, the `ai_response` can be a simple, brief confirmation like "Got it."
+
+            *   **If intent is `clarification`**:
+                - Create a helpful `ai_response` that answers their clarification question and re-asks for the information in a clearer way. Use the field description for context: "{self.field_prompts[field]}"
+            *   **If intent is `unrelated`**:
+                - Create a polite `ai_response` that gently redirects them back to the current question.
+
+        **OUTPUT FORMAT:**
+        Return a single JSON object with the following exact structure. DO NOT add extra text or formatting.
+
+        {{
+          "intent": "answering | clarification | unrelated",
+          "is_valid": true | false,
+          "extracted_value": "The complete, synthesized data, or null if not applicable",
+          "ai_response": "The helpful, user-facing response you crafted."
+        }}
+
+        **Example for this request:**
+        If the user says "what kind of background you need?" for the 'user_experience' field, your output should be:
+        {{
+            "intent": "clarification",
+            "is_valid": false,
+            "extracted_value": null,
+            "ai_response": "I'm looking for a brief summary of your work history, key projects, or skills that are relevant to the {state.profiling_state.user_data.get('job_title', 'role')} you're interested in. For example, you could mention the last couple of roles you've held or a significant achievement."
+        }}
         """
         llm_response_str = await self._call_llm(prompt, is_json=True)
         try:
             cleaned_text = re.sub(r"```json\s*|\s*```", "", llm_response_str)
-            validation_result = json.loads(cleaned_text)
-            is_valid = validation_result.get("is_valid", False)
-            extracted_value = validation_result.get("extracted_value", "I'm sorry, I didn't understand that. Could you rephrase?")
-            logger.info(f"Validation for '{field}': {'Valid' if is_valid else 'Invalid'}. Value: '{extracted_value}'")
-            return is_valid, extracted_value
-        except (json.JSONDecodeError, TypeError):
-            logger.error(f"Failed to decode validation JSON or invalid format: {llm_response_str}")
-            return False, "I had a problem understanding your response. Let's try that again."
+            result = json.loads(cleaned_text)
+            logger.info(f"Validation/Intent result for '{field}': {result}")
+            return result
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error(f"Failed to decode validation JSON: {llm_response_str}. Error: {e}")
+            return {
+                "intent": "answering", "is_valid": False, "extracted_value": None,
+                "ai_response": "I had a little trouble understanding that. Could you please rephrase your response?"
+            }
 
     async def _generate_question(self, field: str, state: SessionState) -> str:
         """Generates the next question to ask the user."""
         user_name_pleasantry = f"Nice to meet you, {state.profiling_state.user_data.get('name', 'there')}! " if field == 'target_company' and 'name' in state.profiling_state.user_data else ""
+        
+        # Get conversation history
+        conversation_history = state.profiling_state.conversation_history
+        
+        # Create a formatted conversation history string
+        formatted_history = ""
+        if conversation_history:
+            formatted_history = "Previous conversation:\n"
+            # Limit to the last 5 exchanges to keep context manageable
+            for entry in conversation_history[-10:]:  # Use last 10 exchanges
+                if "user" in entry:
+                    formatted_history += f"User: {entry['user']}\n"
+                if "assistant" in entry:
+                    formatted_history += f"Assistant: {entry['assistant']}\n"
 
         # ProfilingAgent prompt: Generates conversational questions to collect user profile data
         prompt = f"""
         You are a friendly career assistant.
         {user_name_pleasantry}Generate the next question to ask the user for their '{field.replace('_', ' ')}'.
         This is the official description of what to ask: "{self.field_prompts[field]}"
+        
+        {formatted_history}
+        
         Current collected data: {json.dumps(state.profiling_state.user_data)}
-        Keep it concise and conversational. Do not repeat greetings.
+        
+        IMPORTANT GUIDELINES:
+        - Keep it concise and conversational
+        - Do not repeat greetings
+        - If the user has already mentioned information about '{field}' in previous exchanges, acknowledge that and ask for clarification or additional details
+        - Make your question natural and flowing from the conversation context
+        - Avoid asking for information that the user has already provided
         """
         return await self._call_llm(prompt)
 
     async def process(self, user_input: str, state: SessionState) -> str:
         """Main processing logic for the profiling conversation."""
         profiling = state.profiling_state
+        
         profiling.conversation_history.append({"user": user_input})
 
-        if not profiling.last_question: # First turn of the conversation
+        if not profiling.last_question:
             current_field = self.fields[0]
             reply = await self._generate_question(current_field, state)
-        else: # Subsequent turns
+        else:
             current_field_index = profiling.current_field_index
+            
             if current_field_index >= len(self.fields):
                 return "Our profiling session is complete. We are now moving to the interview phase."
 
             current_field = self.fields[current_field_index]
-            is_valid, extracted_value = await self._validate_and_extract_response(current_field, user_input, state)
-
-            if not is_valid:
-                reply = extracted_value # Return the clarification/error message
-            else:
-                profiling.user_data[current_field] = extracted_value
+            
+            validation_result = await self._validate_and_extract_response(current_field, user_input, state)
+            
+            intent = validation_result.get("intent")
+            is_valid = validation_result.get("is_valid", False)
+            
+            if intent == 'answering' and is_valid:
+                # Valid answer received, store data and move to the next field
+                profiling.user_data[current_field] = validation_result.get("extracted_value")
                 next_field_index = current_field_index + 1
                 profiling.current_field_index = next_field_index
 
@@ -165,9 +235,17 @@ class ProfilingAgent:
                 else:
                     next_field = self.fields[next_field_index]
                     reply = await self._generate_question(next_field, state)
+            else:
+                # Handle clarification, invalid answer, or unrelated query
+                # The LLM has already generated the appropriate response.
+                # We do not advance to the next field.
+                reply = validation_result.get("ai_response", "I'm not sure how to handle that. Could you try rephrasing?")
 
         profiling.last_question = reply
         profiling.conversation_history.append({"assistant": reply})
+        
+        logger.info(f"ProfileAgent - Current field: {self.fields[profiling.current_field_index] if profiling.current_field_index < len(self.fields) else 'None'}, Field index: {profiling.current_field_index}, User data: {json.dumps(profiling.user_data)}")
+        
         return reply
 
 
@@ -186,6 +264,35 @@ class InterviewAgent:
         # We'll use this model ID directly in methods, no need to store model object
         self.model_name = "gemini-2.5-flash-preview-04-17"
 
+    async def _call_llm(self, prompt: str, is_json: bool = False) -> str:
+        """Helper method to call the LLM with proper settings."""
+        try:
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=prompt)],
+                ),
+            ]
+            
+            gen_config = types.GenerateContentConfig(
+                response_mime_type="application/json" if is_json else "text/plain",
+                temperature=0,
+            )
+            
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.model_name,
+                contents=contents,
+                config=gen_config
+            )
+            
+            return response.text.strip()
+        except Exception as e:
+            logging.error(f"LLM call failed: {str(e)}", exc_info=True)
+            if "rate limit" in str(e).lower():
+                return '{"error": "API rate limit exceeded. Please try again in a moment."}' if is_json else "I'm currently experiencing high demand. Could you try again in a moment?"
+            return '{"error": "Failed to get a valid response from the model."}' if is_json else "I'm having a little trouble processing that. Could we try again?"
+
     async def prepare_interview(self, state: SessionState):
         """BACKGROUND TASK: Runs search agent to gather data for the interview."""
         if state.search_state.search_data:
@@ -199,22 +306,193 @@ class InterviewAgent:
         logger.info(f"Starting background search for session {state.session_id}...")
         await self._search(state)
         logger.info(f"Background search completed for session {state.session_id}")
+        
+        # Save the updated session with search data
         save_session(state, get_user_collection())
+
+    async def _detect_intent(self, user_input: str, question: str) -> dict:
+        """Detects whether the user is answering the question or asking a question/clarification."""
+        
+        prompt = f"""
+        Analyze the user's message in relation to the interview question they were asked.
+        
+        INTERVIEW QUESTION: "{question}"
+        
+        USER'S RESPONSE: "{user_input}"
+        
+        Determine if the user is:
+        1. Providing an answer to the question
+        2. Asking for clarification about the question
+        3. Asking a completely different question
+        4. Providing incomplete or unclear information
+        
+        Return a JSON object with this structure:
+        {{
+            "intent": "answer|clarification|question|unclear",
+            "confidence": 0.0 to 1.0,
+            "explanation": "Brief explanation of the classification"
+        }}
+        """
+        
+        try:
+            # Create appropriate content structure
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt),
+                    ],
+                ),
+            ]
+            
+            # Configure generation parameters
+            gen_config = types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0,
+            )
+            
+            # Call the model using client
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.model_name,
+                contents=contents,
+                config=gen_config
+            )
+            
+            response_text = response.text.strip()
+            # Clean up JSON string if needed
+            cleaned_json = re.sub(r"```json\s*|\s*```", "", response_text)
+            result = json.loads(cleaned_json)
+            
+            logger.info(f"Intent detection result: {result['intent']} (confidence: {result['confidence']})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error detecting intent: {e}", exc_info=True)
+            # Default to assuming it's an answer if detection fails
+            return {
+                "intent": "answer",
+                "confidence": 0.5,
+                "explanation": "Failed to properly detect intent, defaulting to answer"
+            }
+    
+    async def _handle_clarification(self, user_input: str, question: str) -> str:
+        """Generate a response to a user's request for clarification about the question."""
+        
+        prompt = f"""
+        The user was asked the following interview question:
+        "{question}"
+        
+        But instead of answering directly, they asked for clarification:
+        "{user_input}"
+        
+        Provide a helpful clarification that:
+        1. Addresses their specific confusion or request
+        2. Provides additional context about what the question is asking
+        3. Encourages them to answer the original question
+        4. Maintains a professional, supportive tone
+        
+        Keep your response concise and focused on helping them understand what information you're seeking.
+        """
+        
+        try:
+            # Create appropriate content structure
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt),
+                    ],
+                ),
+            ]
+            
+            # Configure generation parameters
+            gen_config = types.GenerateContentConfig(
+                response_mime_type="text/plain",
+                temperature=0.3,
+            )
+            
+            # Call the model using client
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=self.model_name,
+                contents=contents,
+                config=gen_config
+            )
+            
+            return response.text.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating clarification: {e}", exc_info=True)
+            return "I'm looking for information about your relevant work experience for this role. Could you share some details about your background that relate to this position?"
 
     async def process(self, user_input: str, state: SessionState) -> str:
         """ Processes a user's answer and returns the next question or completes the interview. """
         interview = state.interview_state
         detailed_eval = None
         
-        # Ensure search data is available
+        # Ensure search data is available - if not, wait for it
         if not state.search_state.search_data:
-            return "I'm still preparing the interview materials, please give me another moment. I'll have the first question for you shortly."
+            # Wait for search data to be available (max 60 seconds)
+            logger.info(f"Search data not ready for session {state.session_id}, waiting for completion")
+            max_wait_time = 60  # seconds
+            wait_interval = 0.5  # seconds
+            for _ in range(int(max_wait_time / wait_interval)):
+                await asyncio.sleep(wait_interval)
+                # Re-check if search data is now available
+                if state.search_state.search_data:
+                    logger.info(f"Search data is now available after waiting")
+                    break
+            
+            # If still no search data after waiting, generate a fallback question
+            if not state.search_state.search_data:
+                logger.warning(f"Search data still not available after waiting {max_wait_time} seconds")
+                # Don't show a "still preparing" message - directly ask a general question
+                next_question = "What are your key strengths as they relate to this role?"
+                interview.questions.append(next_question)
+                interview.conversation_history.append({"assistant": next_question})
+                return next_question
+            
+            # If we have search data but haven't asked the first question yet, generate it now
+            if not interview.questions:
+                next_question = await self._ask_next_question(state)
+                interview.conversation_history.append({"assistant": next_question})
+                return next_question
 
-        # Store the user's answer if there were previous questions
+        # First-time entry with ready search data
+        if not interview.questions:
+            next_question = await self._ask_next_question(state)
+            interview.conversation_history.append({"assistant": next_question})
+            return next_question
+
+        # Track conversation history for all user messages
+        interview.conversation_history.append({"user": user_input})
+            
+        # If we have a previous question, detect the user's intent
         if interview.questions:
+            last_question = interview.questions[-1]
+            intent_result = await self._detect_intent(user_input, last_question)
+            
+            # Handle different intents
+            if intent_result["intent"] != "answer" and intent_result["confidence"] > 0.6:
+                if intent_result["intent"] == "clarification":
+                    # User is asking for clarification about the question
+                    clarification = await self._handle_clarification(user_input, last_question)
+                    interview.conversation_history.append({"assistant": clarification})
+                    return clarification
+                elif intent_result["intent"] == "question":
+                    # User is asking an unrelated question - politely redirect
+                    redirect = f"I understand you have a question, but I'm currently focused on conducting your interview. Let's continue with the current question: {last_question}"
+                    interview.conversation_history.append({"assistant": redirect})
+                    return redirect
+                elif intent_result["intent"] == "unclear":
+                    # User's response is unclear
+                    prompt = f"I'm not sure I understand your response. Could you please provide more details in relation to the question: {last_question}"
+                    interview.conversation_history.append({"assistant": prompt})
+                    return prompt
+            
+            # If intent is "answer" or we're not confident in another classification, treat as answer
             interview.answers.append(user_input)
-            # Track conversation history
-            interview.conversation_history.append({"user": user_input})
             
             # Evaluate the answer if this isn't the first message
             if len(interview.questions) >= 1:
@@ -490,129 +768,98 @@ class InterviewAgent:
         interview = state.interview_state
         search_data = state.search_state.search_data
         
-        # Split search data into paragraphs to use specific context for each question
         paragraphs = self._split_into_paragraphs(search_data)
         if not paragraphs:
              return "I seem to be having trouble with my source material. Let's try something else. What is the proudest achievement in your career so far?"
 
-        # Define difficulty mapping
         difficulty_levels = {0: "Easy", 1: "Medium", 2: "Hard"}
         
-        # Check if the previous answer was incorrect (score = 0)
-        previous_score_was_zero = False
-        if interview.scores and interview.scores[-1] == 0:
-            previous_score_was_zero = True
-            logging.info(f"Previous answer was incorrect (score: 0), adjusting difficulty for next question")
-        
-        # Determine if we should move to the next paragraph
-        should_move_to_next = False
-        
-        # Get current paragraph counter and index
+        previous_score_was_zero = interview.scores and interview.scores[-1] == 0
+        if previous_score_was_zero:
+            logging.info("Previous answer was incorrect (score: 0), adjusting difficulty.")
+
         question_counter = interview.paragraph_question_counter
         current_index = interview.current_paragraph_index % len(paragraphs)
         
-        if len(interview.questions) > 0 and len(interview.answers) > 0:
-            # Only increment question counter if previous answer was correct
+        if interview.questions and interview.answers:
             if not previous_score_was_zero:
                 question_counter += 1
                 interview.paragraph_question_counter = question_counter
-                logging.info(f"Answer was correct, incrementing question counter to {question_counter}")
-            else:
-                logging.info(f"Answer was incorrect, keeping question counter at {question_counter}")
             
-            # Check if we've asked 3 questions from this paragraph or reached max difficulty
             if question_counter >= 3:
-                # Move to the next paragraph and reset counter
                 interview.current_paragraph_index = (current_index + 1) % len(paragraphs)
                 interview.paragraph_question_counter = 0
-                should_move_to_next = True
-                
                 logging.info(f"Asked 3 questions, moving to paragraph {interview.current_paragraph_index}")
         
-        # Update current index after potentially changing it
         current_index = interview.current_paragraph_index % len(paragraphs)
-        
-        # Update difficulty after potentially changing question counter
         base_question_counter = interview.paragraph_question_counter
         
-        # Adjust difficulty based on previous answer correctness
-        if previous_score_was_zero and base_question_counter > 0:
-            # Reduce difficulty by one level if the previous answer was incorrect
-            adjusted_counter = base_question_counter - 1
-            logging.info(f"Adjusting difficulty from level {base_question_counter} to {adjusted_counter} due to incorrect answer")
-        else:
-            adjusted_counter = base_question_counter
-        
+        adjusted_counter = base_question_counter - 1 if previous_score_was_zero and base_question_counter > 0 else base_question_counter
         difficulty = difficulty_levels.get(adjusted_counter, "Medium")
         
-        logging.info(f"Question counter: {base_question_counter}, Adjusted counter: {adjusted_counter}, Difficulty: {difficulty}")
-        
-        # Get the current paragraph context
+        # --- New: Define Question Styles based on Difficulty ---
+        question_styles = {
+            "Easy": {
+                "title": "Foundational Check",
+                "instruction": "Ask a direct question to verify fundamental knowledge of a key technology, concept, or process mentioned in the context. Example: 'What is the primary purpose of [Technology X] in the context of [Domain Y]?'"
+            },
+            "Medium": {
+                "title": "Scenario-Based Problem",
+                "instruction": "Create a brief, realistic scenario based on the context. The user should be the protagonist. Ask them how they would approach or solve this specific problem. Frame it like: 'Imagine you've been tasked with improving [Metric A] for [Product B]. Given the context, what would be your initial steps?'"
+            },
+            "Hard": {
+                "title": "Complex Design Challenge",
+                "instruction": "Pose a complex, multi-faceted challenge that requires a high-level design or strategic plan. This should involve trade-offs and justification. Frame it like: 'You are leading the project to integrate [System A] with [System B]. Based on the context, outline your proposed architecture. What are the key risks and how would you mitigate them?'"
+            }
+        }
+        selected_style = question_styles[difficulty]
+
         context = paragraphs[current_index]
         
-        # Get the recent conversation context
         conversation_context = ""
         if interview.questions and interview.answers:
-            last_question = interview.questions[-1] if interview.questions else ""
-            last_answer = interview.answers[-1] if interview.answers else ""
+            last_question = interview.questions[-1]
+            last_answer = interview.answers[-1]
             conversation_context = f"Previous Question: {last_question}\nUser's Last Answer: {last_answer}"
         
-        # InterviewAgent prompt: Generates technical interview questions based on search context
+        job_title = state.profiling_state.user_data.get('job_title', 'the role')
+        company = state.profiling_state.user_data.get('target_company', 'the company')
+
         prompt = f"""
-        As a technical interviewer, you need to ask an insightful question based on the following specific information:
-        
-        CONTEXT INFORMATION (USE THIS FOR YOUR QUESTION):
+        You are an expert technical interviewer for {company}, preparing to interview a candidate for a {job_title} position. Your task is to generate one insightful, scenario-based interview question.
+
+        **CANDIDATE PROFILE:**
+        - Role: {job_title}
+        - Target Company: {company}
+
+        **INTERVIEW CONTEXT (Obtained from internal research documents):**
+        ---
         {context}
-        
+        ---
+
+        **RECENT CONVERSATION (for context):**
         {conversation_context}
-        
-        DIFFICULTY LEVEL: {difficulty}
-        
-        INSTRUCTIONS:
-        1. Generate ONE technical interview question that directly relates to the context information above
-        2. Your question must specifically reference information, technologies, or concepts mentioned in the context
-        3. Make the question challenging yet clear, suitable for a technical interview
-        4. Do not mention that this comes from search results or external context
-        5. Focus on creating a question that tests the candidate's knowledge rather than just asking for their opinion
-        6. If the context mentions specific technologies, frameworks, or methods, ask about those specifically
-        7. Adjust the difficulty according to the specified level:
-           - Easy: Basic understanding or knowledge questions
-           - Medium: Questions requiring deeper technical understanding
-           - Hard: Complex questions requiring detailed technical knowledge or experience
-        
-        Return ONLY the interview question with no additional text.
+
+        **YOUR TASK:**
+        Generate ONE interview question following the specific style guide below.
+
+        - **Difficulty Level:** {difficulty}
+        - **Question Style:** {selected_style['title']}
+        - **Instruction for this style:** {selected_style['instruction']}
+
+        **CRITICAL RULES:**
+        1.  **Create a Narrative:** Immerse the candidate in a scenario. Use phrases like "Imagine you are the {job_title} at {company}..." or "Suppose we need to...".
+        2.  **Be Specific:** Directly reference technologies, projects, or concepts from the **INTERVIEW CONTEXT**. Do not ask generic questions.
+        3.  **Test, Don't Just Ask:** The question should test knowledge, problem-solving, or design skills, not just opinions.
+        4.  **Natural Tone:** Sound like a real interviewer, not a bot reading a script. Do not mention "based on the context" in your question.
+        5.  **Output ONLY the question.** No pre-amble, no explanations, just the single question itself.
         """
         
         try:
-            # Create appropriate content structure
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                    ],
-                ),
-            ]
-            
-            # Configure generation parameters
-            gen_config = types.GenerateContentConfig(
-                response_mime_type="text/plain",
-                temperature=0.4,
-            )
-            
-            # Call the model using client
-            response = await asyncio.to_thread(
-                self.client.models.generate_content,
-                model=self.model_name,
-                contents=contents,
-                config=gen_config
-            )
-            
-            next_question = response.text.strip()
-            # Store the question in the interview state
+            response = await self._call_llm(prompt, is_json=False)
+            next_question = response.strip()
             interview.questions.append(next_question)
             return next_question
-
         except Exception as e:
             logging.error(f"Error generating next question: {e}", exc_info=True)
             return "I'm having trouble formulating my next question. Could we take a brief pause?"
