@@ -803,7 +803,16 @@ class InterviewAgent:
     async def _ask_next_question(self, state: SessionState) -> str:
         """Generate the next interview question based on current interview stage and search data."""
         interview = state.interview_state
-        
+        total_questions_asked = (
+            interview.domain_questions_asked +
+            interview.technical_questions_asked +
+            interview.soft_skill_questions_asked
+        )
+        if total_questions_asked >= self.MAX_QUESTIONS:
+            logger.info(f"Global max questions ({self.MAX_QUESTIONS}) reached, finalizing interview.")
+            asyncio.create_task(self.finalize_interview(state))
+            return "That concludes our interview questions. Thank you for your responses. I'll now analyze your answers and provide feedback."
+
         # Determine which type of question to ask based on the current interview stage
         if interview.current_stage == "domain_specific":
             # Check if we've reached the limit for domain-specific questions
@@ -811,7 +820,7 @@ class InterviewAgent:
                 # Transition to technical questions
                 interview.current_stage = "technical"
                 logger.info(f"Transitioning from domain_specific to technical questions for session {state.session_id}")
-                return await self._generate_technical_question(state)
+                return await self._ask_next_question(state)
             else:
                 # Continue with domain-specific questions
                 next_question = await self._generate_domain_question(state)
@@ -826,7 +835,7 @@ class InterviewAgent:
                 # Transition to soft skill questions
                 interview.current_stage = "soft_skill"
                 logger.info(f"Transitioning from technical to soft_skill questions for session {state.session_id}")
-                return await self._generate_soft_skill_question(state)
+                return await self._ask_next_question(state)
             else:
                 # Continue with technical questions
                 next_question = await self._generate_technical_question(state)
@@ -876,6 +885,7 @@ class InterviewAgent:
         # Select paragraph based on question count
         current_index = interview.domain_questions_asked % len(paragraphs)
         context = paragraphs[current_index]
+        logger.info(f"Domain Q uses paragraph index: {current_index}")
         
         # --- Domain Question Styles based on Difficulty ---
         question_styles = {
@@ -982,8 +992,9 @@ class InterviewAgent:
         if search_data:
             paragraphs = self._split_into_paragraphs(search_data)
             if paragraphs:
-                # Take the first paragraph as context
-                tech_context = paragraphs[0]
+                current_index = interview.technical_questions_asked % len(paragraphs)
+                tech_context = paragraphs[current_index]
+                logger.info(f"Technical Q uses paragraph index: {current_index}")
         
         # Previous questions to avoid repetition
         previous_questions = interview.asked_question_texts
@@ -1063,6 +1074,15 @@ class InterviewAgent:
         
         # Previous questions to avoid repetition
         previous_questions = interview.asked_question_texts
+        
+        # Get context paragraph for soft skill if available
+        search_data = state.search_state.search_data or ""
+        if search_data:
+            paragraphs = self._split_into_paragraphs(search_data)
+            if paragraphs:
+                current_index = interview.soft_skill_questions_asked % len(paragraphs)
+                soft_context = paragraphs[current_index]
+                logger.info(f"Soft Skill Q uses paragraph index: {current_index}")
         
         # Define soft skill question categories
         soft_skill_categories = [
