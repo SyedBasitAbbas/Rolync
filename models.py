@@ -53,6 +53,15 @@ class GroundingSource(BaseModel):
         "populate_by_name": True
     }
 
+class QuestionData(BaseModel):
+    """Represents a single interview question with its associated metadata."""
+    question_id: str
+    text: str
+    category: Literal["domain_specific", "technical", "soft_skill"] = "domain_specific"
+    difficulty: Optional[str] = None
+    source_paragraph: Optional[str] = None
+    source_heading: Optional[str] = None
+
 class DataSourceResponse(BaseModel):
     """Response from the initial search_agent call."""
     search_data: str
@@ -67,6 +76,7 @@ class QuestionResponse(BaseModel):
     """
     question: str
     session_id: str
+    category: Optional[str] = None  # Category of the question: domain_specific, technical, or soft_skill
     source_paragraph: Optional[str] = None
     source_heading: Optional[str] = None
     difficulty: Optional[str] = None  # Difficulty of the *new* question being asked
@@ -133,6 +143,7 @@ class InterviewState(BaseModel):
     """Holds the state for the Q&A part of the interview."""
     conversation_history: List[Dict[str, str]] = Field(default_factory=list)
     questions: List[str] = Field(default_factory=list)
+    question_categories: List[str] = Field(default_factory=list)  # Tracks category for each question
     answers: List[str] = Field(default_factory=list)
     scores: List[float] = Field(default_factory=list)
     max_scores: List[float] = Field(default_factory=list)
@@ -140,6 +151,20 @@ class InterviewState(BaseModel):
     paragraph_question_counter: int = 0
     questions_asked_count: int = 0
     first_question_generated: bool = False
+    
+    # For tracking the structured interview flow
+    current_stage: Literal["domain_specific", "technical", "soft_skill"] = "domain_specific"
+    domain_questions_asked: int = 0
+    technical_questions_asked: int = 0
+    soft_skill_questions_asked: int = 0
+    
+    # Maximum number of questions per category
+    domain_questions_limit: int = 4  # Verified: 4 domain-specific questions
+    technical_questions_limit: int = 3  # Verified: 3 technical questions
+    soft_skill_questions_limit: int = 3  # Verified: 3 soft skill questions
+    
+    # Track asked questions to prevent repetition
+    asked_question_texts: List[str] = Field(default_factory=list)
 
 class SearchState(BaseModel):
     """Holds the data gathered by the search agent."""
@@ -167,7 +192,7 @@ class SessionState(BaseModel):
     
     # Fields for doubt handling
     doubt_queries_count: int = 0
-    doubt_queries_limit: int = 3
+    doubt_queries_limit: int = 20  # Updated from 3 to 20 to allow more follow-up questions
     doubt_session_start: Optional[datetime] = None
     doubt_conversation_history: List[Dict[str, str]] = Field(default_factory=list)
     

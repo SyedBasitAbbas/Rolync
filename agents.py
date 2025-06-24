@@ -53,28 +53,31 @@ class ProfilingAgent:
         
         # Initialize client instead of GenerativeModel
         self.client = genai.Client(api_key=api_key)
-        # We'll use this model ID directly in methods, no need to store model object
+        # Primary model
         self.model_name = "gemini-2.5-flash-preview-04-17"
+        # Fallback model for when primary hits rate limits
+        self.fallback_model_name = "gemini-2.5-flash-lite-preview-06-17"
 
     async def _call_llm(self, prompt: str, is_json: bool = False) -> str:
         """Helper method to call the LLM with proper settings."""
+        # Create appropriate content structure
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                ],
+            ),
+        ]
+        
+        # Configure generation parameters
+        gen_config = types.GenerateContentConfig(
+            response_mime_type="application/json" if is_json else "text/plain",
+            temperature=0,
+        )
+            
+        # First try with primary model
         try:
-            # Create appropriate content structure
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                    ],
-                ),
-            ]
-            
-            # Configure generation parameters
-            gen_config = types.GenerateContentConfig(
-                response_mime_type="application/json" if is_json else "text/plain",
-                temperature=0,
-            )
-            
             # Call the model using client
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
@@ -84,10 +87,26 @@ class ProfilingAgent:
             )
             
             return response.text.strip()
-        except Exception as e:
-            logging.error(f"LLM call failed: {str(e)}", exc_info=True)
-            if "rate limit" in str(e).lower():
-                return '{"error": "API rate limit exceeded. Please try again in a moment."}' if is_json else "I'm currently experiencing high demand. Could you try again in a moment?"
+        except Exception as primary_error:
+            error_str = str(primary_error).lower()
+            if ("rate limit" in error_str or "resource_exhausted" in error_str or "quota" in error_str):
+                # Log fallback in orange
+                logger.info(f"\033[33mPrimary model hit quota/rate limit, falling back to {self.fallback_model_name}\033[0m")
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=self.fallback_model_name,
+                        contents=contents,
+                        config=gen_config
+                    )
+                    logger.info(f"\033[33mSuccessfully used fallback model {self.fallback_model_name}\033[0m")
+                    return response.text.strip()
+                except Exception as fallback_error:
+                    logging.error(f"Fallback model also failed: {str(fallback_error)}", exc_info=True)
+                    return '{"error": "All available models failed to respond."}' if is_json else "I'm currently experiencing technical difficulties. Could we try again in a moment?"
+            else:
+                # For non-rate-limit errors
+                logging.error(f"LLM call failed with primary model: {str(primary_error)}", exc_info=True)
             return '{"error": "Failed to get a valid response from the model."}' if is_json else "I'm having a little trouble processing that. Could we try again?"
 
     async def _validate_and_extract_response(self, field: str, response: str, state: SessionState) -> dict:
@@ -251,9 +270,17 @@ class ProfilingAgent:
 
 class InterviewAgent:
     """ Handles the Q&A interview flow, including search, question generation, evaluation, and summary. """
-    MAX_QUESTIONS = 3
+    MAX_QUESTIONS = 10  # Updated from 3 to 10 to ensure all questions are asked before finalizing
 
     def __init__(self):
+        self.fields = ["name", "target_company", "job_title", "user_experience", "user_long_term_objective"]
+        self.field_prompts = {
+            "name": "Ask for the user's full name in a friendly, professional tone.",
+            "target_company": "Ask for the name of the company the user is interested in.",
+            "job_title": "Ask for the specific job title the user is seeking (e.g., 'AI Engineer', 'Product Manager').",
+            "user_experience": "Ask for a brief summary of the user's relevant work experience or background.",
+            "user_long_term_objective": "Ask about the user's long-term career objectives or aspirations."
+        }
         # Check if environment variable is set
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
@@ -261,24 +288,29 @@ class InterviewAgent:
         
         # Initialize client instead of GenerativeModel
         self.client = genai.Client(api_key=api_key)
-        # We'll use this model ID directly in methods, no need to store model object
+        # Primary model
         self.model_name = "gemini-2.5-flash-preview-04-17"
+        # Fallback model for when primary hits rate limits
+        self.fallback_model_name = "gemini-2.5-flash-lite-preview-06-17"
 
     async def _call_llm(self, prompt: str, is_json: bool = False) -> str:
         """Helper method to call the LLM with proper settings."""
+        contents = [
+            types.Content(
+                role="user",
+            parts=[
+                types.Part.from_text(text=prompt),
+            ],
+            ),
+        ]
+        
+        gen_config = types.GenerateContentConfig(
+            response_mime_type="application/json" if is_json else "text/plain",
+            temperature=0,
+        )
+            
+        # First try with primary model
         try:
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=prompt)],
-                ),
-            ]
-            
-            gen_config = types.GenerateContentConfig(
-                response_mime_type="application/json" if is_json else "text/plain",
-                temperature=0,
-            )
-            
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
                 model=self.model_name,
@@ -287,10 +319,26 @@ class InterviewAgent:
             )
             
             return response.text.strip()
-        except Exception as e:
-            logging.error(f"LLM call failed: {str(e)}", exc_info=True)
-            if "rate limit" in str(e).lower():
-                return '{"error": "API rate limit exceeded. Please try again in a moment."}' if is_json else "I'm currently experiencing high demand. Could you try again in a moment?"
+        except Exception as primary_error:
+            error_str = str(primary_error).lower()
+            if ("rate limit" in error_str or "resource_exhausted" in error_str or "quota" in error_str):
+                # Log fallback in orange
+                logger.info(f"\033[33mPrimary model hit quota/rate limit, falling back to {self.fallback_model_name}\033[0m")
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=self.fallback_model_name,
+                        contents=contents,
+                        config=gen_config
+                    )
+                    logger.info(f"\033[33mSuccessfully used fallback model {self.fallback_model_name}\033[0m")
+                    return response.text.strip()
+                except Exception as fallback_error:
+                    logging.error(f"Fallback model also failed: {str(fallback_error)}", exc_info=True)
+                    return '{"error": "All available models failed to respond."}' if is_json else "I'm currently experiencing technical difficulties. Could we try again in a moment?"
+            else:
+                # For non-rate-limit errors
+                logging.error(f"LLM call failed with primary model: {str(primary_error)}", exc_info=True)
             return '{"error": "Failed to get a valid response from the model."}' if is_json else "I'm having a little trouble processing that. Could we try again?"
 
     async def prepare_interview(self, state: SessionState):
@@ -468,34 +516,15 @@ class InterviewAgent:
         # Track conversation history for all user messages
         interview.conversation_history.append({"user": user_input})
             
-        # If we have a previous question, detect the user's intent
+        # If we have a previous question, treat the user input as an answer
         if interview.questions:
-            last_question = interview.questions[-1]
-            intent_result = await self._detect_intent(user_input, last_question)
-            
-            # Handle different intents
-            if intent_result["intent"] != "answer" and intent_result["confidence"] > 0.6:
-                if intent_result["intent"] == "clarification":
-                    # User is asking for clarification about the question
-                    clarification = await self._handle_clarification(user_input, last_question)
-                    interview.conversation_history.append({"assistant": clarification})
-                    return clarification
-                elif intent_result["intent"] == "question":
-                    # User is asking an unrelated question - politely redirect
-                    redirect = f"I understand you have a question, but I'm currently focused on conducting your interview. Let's continue with the current question: {last_question}"
-                    interview.conversation_history.append({"assistant": redirect})
-                    return redirect
-                elif intent_result["intent"] == "unclear":
-                    # User's response is unclear
-                    prompt = f"I'm not sure I understand your response. Could you please provide more details in relation to the question: {last_question}"
-                    interview.conversation_history.append({"assistant": prompt})
-                    return prompt
-            
-            # If intent is "answer" or we're not confident in another classification, treat as answer
-            interview.answers.append(user_input)
-            
-            # Evaluate the answer if this isn't the first message
-            if len(interview.questions) >= 1:
+            # Check if we already have the same number of answers as questions
+            # If so, this means we've already processed this answer
+            if len(interview.answers) < len(interview.questions):
+                # Only append the answer if it hasn't been added yet
+                interview.answers.append(user_input)
+                
+                # Evaluate the answer
                 try:
                     evaluation_result = await self._evaluate_answer(state)
                     
@@ -522,7 +551,9 @@ class InterviewAgent:
                     interview.max_scores.append(2.0)
         
         # Check if we've reached the maximum number of questions
-        if len(interview.questions) >= self.MAX_QUESTIONS:
+        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
+        logger.info(f"Question count: domain={interview.domain_questions_asked}, technical={interview.technical_questions_asked}, soft_skill={interview.soft_skill_questions_asked}, total={total_questions_asked}/{self.MAX_QUESTIONS}")
+        if total_questions_asked >= self.MAX_QUESTIONS:
             # Generate summary and transition to summary stage
             state.current_stage = 'summary'
             await self._generate_summary(state)
@@ -533,19 +564,25 @@ class InterviewAgent:
             # Find matches based on summary and return them to the user
             matches = await self._find_matches(state)
             
-            # Format matches for display to user
+            # Format matches for display to user in Markdown format
             if matches:
                 match_count = len(matches)
-                match_details = "\n\nHere are potential referrers who match your profile:\n"
+                match_details = "\n\n## Potential Referrers Who Match Your Profile\n"
                 for i, match in enumerate(matches[:5], 1):  # Show up to 5 matches
                     match_name = match.get("name", "Unnamed Referrer")
                     match_company = match.get("company", "Unknown Company")
                     match_role = match.get("role", "Unknown Role")
-                    match_details += f"\n{i}. {match_name} - {match_company}, {match_role}"
+                    match_score = match.get("match_score", 0.0)
+                    score_percentage = int(match_score * 100) if isinstance(match_score, (int, float)) else "--"
+                    
+                    match_details += f"\n### {i}. {match_name}\n"
+                    match_details += f"- **Company:** {match_company}\n"
+                    match_details += f"- **Role:** {match_role}\n"
+                    match_details += f"- **Match Score:** {score_percentage}%\n"
                 
-                return f"Thanks for completing the interview! Based on your responses, I've found {match_count} potential referrals that match your profile.{match_details}\n\nYou can reach out to these professionals for referral opportunities."
+                return f"## Interview Completed! 🎉\n\nThank you for completing the interview process. Based on your responses, I've found **{match_count} potential referrals** that match your profile.{match_details}\n\n> You can now reach out to these professionals for referral opportunities. Feel free to ask any questions about your results."
             else:
-                return "Thanks for completing the interview! I've analyzed your responses and am searching for potential referrals that match your profile."
+                return "## Interview Completed! 🎉\n\nThank you for completing the interview process! I've analyzed your responses and am currently searching for potential referrals that match your profile. Please check back shortly for your matches."
         
         # Generate the next question
         next_question = await self._ask_next_question(state)
@@ -764,7 +801,61 @@ class InterviewAgent:
             return "I encountered an error while searching for information. Let's continue with the interview."
 
     async def _ask_next_question(self, state: SessionState) -> str:
-        """Generate the next interview question based on search data and conversation history."""
+        """Generate the next interview question based on current interview stage and search data."""
+        interview = state.interview_state
+        
+        # Determine which type of question to ask based on the current interview stage
+        if interview.current_stage == "domain_specific":
+            # Check if we've reached the limit for domain-specific questions
+            if interview.domain_questions_asked >= interview.domain_questions_limit:
+                # Transition to technical questions
+                interview.current_stage = "technical"
+                logger.info(f"Transitioning from domain_specific to technical questions for session {state.session_id}")
+                return await self._generate_technical_question(state)
+            else:
+                # Continue with domain-specific questions
+                next_question = await self._generate_domain_question(state)
+                interview.domain_questions_asked += 1
+                interview.question_categories.append("domain_specific")
+                logger.info(f"Generated domain-specific question ({interview.domain_questions_asked}/{interview.domain_questions_limit}) for session {state.session_id}")
+                return next_question
+                
+        elif interview.current_stage == "technical":
+            # Check if we've reached the limit for technical questions
+            if interview.technical_questions_asked >= interview.technical_questions_limit:
+                # Transition to soft skill questions
+                interview.current_stage = "soft_skill"
+                logger.info(f"Transitioning from technical to soft_skill questions for session {state.session_id}")
+                return await self._generate_soft_skill_question(state)
+            else:
+                # Continue with technical questions
+                next_question = await self._generate_technical_question(state)
+                interview.technical_questions_asked += 1
+                interview.question_categories.append("technical")
+                logger.info(f"Generated technical question ({interview.technical_questions_asked}/{interview.technical_questions_limit}) for session {state.session_id}")
+                return next_question
+                
+        elif interview.current_stage == "soft_skill":
+            # Check if we've reached the limit for soft skill questions
+            if interview.soft_skill_questions_asked >= interview.soft_skill_questions_limit:
+                # Interview is complete
+                logger.info(f"All questions completed for session {state.session_id}, finalizing interview")
+                asyncio.create_task(self.finalize_interview(state))
+                return "That concludes our interview questions. Thank you for your responses. I'll now analyze your answers and provide feedback."
+            else:
+                # Continue with soft skill questions
+                next_question = await self._generate_soft_skill_question(state)
+                interview.soft_skill_questions_asked += 1
+                interview.question_categories.append("soft_skill")
+                logger.info(f"Generated soft skill question ({interview.soft_skill_questions_asked}/{interview.soft_skill_questions_limit}) for session {state.session_id}")
+                return next_question
+        
+        # Fallback in case of unexpected state
+        logger.warning(f"Unexpected interview stage: {interview.current_stage} for session {state.session_id}")
+        return "I seem to be having trouble with my interview flow. Let me ask you: What do you consider your greatest professional achievement so far?"
+
+    async def _generate_domain_question(self, state: SessionState) -> str:
+        """Generate a domain-specific question based on the search data."""
         interview = state.interview_state
         search_data = state.search_state.search_data
         
@@ -772,32 +863,21 @@ class InterviewAgent:
         if not paragraphs:
              return "I seem to be having trouble with my source material. Let's try something else. What is the proudest achievement in your career so far?"
 
+        # Calculate difficulty based on total questions asked across all categories
+        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
+        
+        # Cycle through difficulty levels: Easy (0,3,6,9), Medium (1,4,7), Hard (2,5,8)
+        difficulty_index = total_questions_asked % 3
         difficulty_levels = {0: "Easy", 1: "Medium", 2: "Hard"}
+        difficulty = difficulty_levels[difficulty_index]
         
-        previous_score_was_zero = interview.scores and interview.scores[-1] == 0
-        if previous_score_was_zero:
-            logging.info("Previous answer was incorrect (score: 0), adjusting difficulty.")
-
-        question_counter = interview.paragraph_question_counter
-        current_index = interview.current_paragraph_index % len(paragraphs)
+        logger.info(f"Generating domain question #{interview.domain_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
         
-        if interview.questions and interview.answers:
-            if not previous_score_was_zero:
-                question_counter += 1
-                interview.paragraph_question_counter = question_counter
-            
-            if question_counter >= 3:
-                interview.current_paragraph_index = (current_index + 1) % len(paragraphs)
-                interview.paragraph_question_counter = 0
-                logging.info(f"Asked 3 questions, moving to paragraph {interview.current_paragraph_index}")
+        # Select paragraph based on question count
+        current_index = interview.domain_questions_asked % len(paragraphs)
+        context = paragraphs[current_index]
         
-        current_index = interview.current_paragraph_index % len(paragraphs)
-        base_question_counter = interview.paragraph_question_counter
-        
-        adjusted_counter = base_question_counter - 1 if previous_score_was_zero and base_question_counter > 0 else base_question_counter
-        difficulty = difficulty_levels.get(adjusted_counter, "Medium")
-        
-        # --- New: Define Question Styles based on Difficulty ---
+        # --- Domain Question Styles based on Difficulty ---
         question_styles = {
             "Easy": {
                 "title": "Foundational Check",
@@ -805,16 +885,14 @@ class InterviewAgent:
             },
             "Medium": {
                 "title": "Scenario-Based Problem",
-                "instruction": "Create a brief, realistic scenario based on the context. The user should be the protagonist. Ask them how they would approach or solve this specific problem. Frame it like: 'Imagine you've been tasked with improving [Metric A] for [Product B]. Given the context, what would be your initial steps?'"
+                "instruction": "Create a brief, realistic scenario based on the context. Frame it like: 'As the [role] at [company], how would you address [specific challenge]?' or 'What approach would you take to solve [specific problem] in our [product/system]?'"
             },
             "Hard": {
                 "title": "Complex Design Challenge",
-                "instruction": "Pose a complex, multi-faceted challenge that requires a high-level design or strategic plan. This should involve trade-offs and justification. Frame it like: 'You are leading the project to integrate [System A] with [System B]. Based on the context, outline your proposed architecture. What are the key risks and how would you mitigate them?'"
+                "instruction": "Pose a complex, multi-faceted challenge that requires a high-level design or strategic plan. Frame it like: 'Our team needs to [complex task]. What architecture would you propose and what key considerations would guide your approach?'"
             }
         }
         selected_style = question_styles[difficulty]
-
-        context = paragraphs[current_index]
         
         conversation_context = ""
         if interview.questions and interview.answers:
@@ -840,29 +918,230 @@ class InterviewAgent:
         **RECENT CONVERSATION (for context):**
         {conversation_context}
 
+        **PREVIOUSLY ASKED QUESTIONS:**
+        {interview.asked_question_texts}
+
         **YOUR TASK:**
-        Generate ONE interview question following the specific style guide below.
+        Generate ONE domain-specific interview question following the specific style guide below.
 
         - **Difficulty Level:** {difficulty}
         - **Question Style:** {selected_style['title']}
         - **Instruction for this style:** {selected_style['instruction']}
 
         **CRITICAL RULES:**
-        1.  **Create a Narrative:** Immerse the candidate in a scenario. Use phrases like "Imagine you are the {job_title} at {company}..." or "Suppose we need to...".
-        2.  **Be Specific:** Directly reference technologies, projects, or concepts from the **INTERVIEW CONTEXT**. Do not ask generic questions.
-        3.  **Test, Don't Just Ask:** The question should test knowledge, problem-solving, or design skills, not just opinions.
-        4.  **Natural Tone:** Sound like a real interviewer, not a bot reading a script. Do not mention "based on the context" in your question.
+        1.  **Vary Question Formats:** Use different phrasings for each question. Avoid starting every question with the same words (like "imagine" or "suppose"). Instead, vary with formats like:
+            - "How would you approach..."
+            - "What strategy would you implement for..."
+            - "Tell me about how you would solve..."
+            - "In your role as {job_title}, what would be your approach to..."
+            - "Based on your experience, how would you handle..."
+        2.  **Be Specific:** Directly reference technologies, projects, or concepts from the INTERVIEW CONTEXT.
+        3.  **Sound Natural:** Use the conversational tone of a real human interviewer, not an AI.
+        4.  **Test Knowledge:** The question should test domain knowledge, problem-solving, or design skills.
         5.  **Output ONLY the question.** No pre-amble, no explanations, just the single question itself.
+        6.  **Check Previous Questions:** Ensure your question is different in both content and phrasing from previously asked questions.
+        7.  **Format in Markdown:** Format your question using Markdown syntax. Use appropriate formatting like:
+            - Bold (**text**) for emphasis on key terms
+            - Bullet points for lists if needed
+            - Code blocks for technical code examples if relevant
         """
         
         try:
             response = await self._call_llm(prompt, is_json=False)
             next_question = response.strip()
+            
+            # Store the question to prevent repetition
+            interview.asked_question_texts.append(next_question)
             interview.questions.append(next_question)
             return next_question
         except Exception as e:
-            logging.error(f"Error generating next question: {e}", exc_info=True)
-            return "I'm having trouble formulating my next question. Could we take a brief pause?"
+            logging.error(f"Error generating domain question: {e}", exc_info=True)
+            return "I'm having trouble formulating my next domain-specific question. Could you tell me about your experience with this type of role?"
+
+    async def _generate_technical_question(self, state: SessionState) -> str:
+        """Generate a technical question based on the job role and company."""
+        interview = state.interview_state
+        job_title = state.profiling_state.user_data.get('job_title', 'the role')
+        company = state.profiling_state.user_data.get('target_company', 'the company')
+        
+        # Calculate difficulty based on total questions asked across all categories
+        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
+        
+        # Cycle through difficulty levels: Easy (0,3,6,9), Medium (1,4,7), Hard (2,5,8)
+        difficulty_index = total_questions_asked % 3
+        difficulty_levels = {0: "Easy", 1: "Medium", 2: "Hard"}
+        difficulty = difficulty_levels[difficulty_index]
+        
+        logger.info(f"Generating technical question #{interview.technical_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
+        
+        # Get relevant technical context from search data
+        search_data = state.search_state.search_data or ""
+        tech_context = ""
+        
+        # Extract technical keywords from search data
+        if search_data:
+            paragraphs = self._split_into_paragraphs(search_data)
+            if paragraphs:
+                # Take the first paragraph as context
+                tech_context = paragraphs[0]
+        
+        # Previous questions to avoid repetition
+        previous_questions = interview.asked_question_texts
+        
+        # Create prompt for technical question generation
+        prompt = f"""
+        You are an expert technical interviewer for {company}, preparing to interview a candidate for a {job_title} position. Your task is to generate one technical interview question.
+
+        **CANDIDATE PROFILE:**
+        - Role: {job_title}
+        - Target Company: {company}
+
+        **TECHNICAL CONTEXT:**
+        {tech_context}
+
+        **PREVIOUSLY ASKED QUESTIONS:**
+        {previous_questions}
+
+        **YOUR TASK:**
+        Generate ONE technical interview question that:
+        
+        1. Assesses specific technical skills relevant to a {job_title} position
+        2. Focuses on practical problem-solving rather than just theoretical knowledge
+        3. Is challenging but reasonable for a qualified candidate
+        4. Is NOT similar to any previously asked questions
+        5. Is relevant to the technologies or technical challenges that would be faced in this role
+
+        **QUESTION TYPES TO CONSIDER:**
+        - Algorithmic problem-solving
+        - System design
+        - Coding approach to specific problems
+        - Technical trade-offs and decision-making
+        - Debugging scenarios
+        - Performance optimization
+
+        **CRITICAL RULES:**
+        1. Make the question specific to the {job_title} role, not generic.
+        2. Ensure the question has a clear technical focus.
+        3. The question should be answerable in 2-3 minutes verbally.
+        4. Output ONLY the question - no explanations, introductions, or follow-ups.
+        5. Do not ask about specific programming languages unless they're central to the role.
+        6. Make sure the question has real-world applicability.
+        7. Format your question using Markdown syntax:
+           - Use **bold** for key technical terms
+           - Use `code blocks` for any code snippets or technical syntax
+           - Use bullet points for listing options if needed
+           - Structure multi-part questions clearly with numbered points
+        """
+        
+        try:
+            response = await self._call_llm(prompt, is_json=False)
+            next_question = response.strip()
+            
+            # Store the question to prevent repetition
+            interview.asked_question_texts.append(next_question)
+            interview.questions.append(next_question)
+            return next_question
+        except Exception as e:
+            logging.error(f"Error generating technical question: {e}", exc_info=True)
+            return "Let me ask you a technical question: How would you approach troubleshooting a complex system issue when you have limited information about the root cause?"
+
+    async def _generate_soft_skill_question(self, state: SessionState) -> str:
+        """Generate a soft skill question focused on cultural fit and interpersonal skills."""
+        interview = state.interview_state
+        job_title = state.profiling_state.user_data.get('job_title', 'the role')
+        company = state.profiling_state.user_data.get('target_company', 'the company')
+        
+        # Calculate difficulty based on total questions asked across all categories
+        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
+        
+        # Cycle through difficulty levels: Easy (0,3,6,9), Medium (1,4,7), Hard (2,5,8)
+        difficulty_index = total_questions_asked % 3
+        difficulty_levels = {0: "Easy", 1: "Medium", 2: "Hard"}
+        difficulty = difficulty_levels[difficulty_index]
+        
+        logger.info(f"Generating soft skill question #{interview.soft_skill_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
+        
+        # Previous questions to avoid repetition
+        previous_questions = interview.asked_question_texts
+        
+        # Define soft skill question categories
+        soft_skill_categories = [
+            "teamwork", "communication", "conflict resolution", 
+            "adaptability", "leadership", "time management",
+            "work ethic", "problem solving", "cultural fit"
+        ]
+        
+        # Select a category based on questions asked so far
+        category_index = interview.soft_skill_questions_asked % len(soft_skill_categories)
+        selected_category = soft_skill_categories[category_index]
+        
+        # Example scenarios for different categories to enhance question quality
+        example_scenarios = {
+            "teamwork": f"Imagine you're working on a cross-functional project at {company} where team members have conflicting priorities...",
+            "communication": f"Suppose you need to explain a complex technical concept to non-technical stakeholders at {company}...",
+            "conflict resolution": f"Picture a situation where you and a colleague at {company} strongly disagree on the approach to a critical project...",
+            "adaptability": f"Consider that {company} is going through a major strategic shift that affects your role as {job_title}...",
+            "leadership": f"Envision that you're leading a team at {company} through a challenging product launch with tight deadlines...",
+            "time management": f"Imagine you're juggling multiple high-priority projects at {company} with competing deadlines...",
+            "work ethic": f"At {company}, you notice a colleague taking shortcuts that might impact product quality...",
+            "problem solving": f"You discover a significant issue with a {company} product just before launch...",
+            "cultural fit": f"Consider that {company} values [research their values if possible] in all aspects of work..."
+        }
+        
+        scenario_example = example_scenarios.get(selected_category, f"Imagine a challenging situation as a {job_title} at {company}...")
+        
+        # Create prompt for soft skill question generation
+        prompt = f"""
+        You are an expert interviewer for {company}, preparing to interview a candidate for a {job_title} position. Your task is to generate one scenario-based soft skill interview question.
+
+        **CANDIDATE PROFILE:**
+        - Role: {job_title}
+        - Target Company: {company}
+
+        **PREVIOUSLY ASKED QUESTIONS:**
+        {previous_questions}
+
+        **CATEGORY:**
+        {selected_category}
+
+        **EXAMPLE SCENARIO STRUCTURE (DO NOT USE DIRECTLY):**
+        {scenario_example}
+
+        **YOUR TASK:**
+        Generate ONE compelling, scenario-based soft skill interview question that:
+        
+        1. Places the candidate in a realistic, specific work situation at {company}
+        2. Indirectly evaluates their culture fit without explicitly asking about it
+        3. Reveals how they would handle challenging interpersonal or workplace situations
+        4. Provides enough context to make the scenario feel authentic and company-specific
+        5. Is NOT similar to any previously asked questions
+        6. Allows you to evaluate whether they would be a good fit for the company culture and work environment
+
+        **CRITICAL RULES:**
+        1. Create a SPECIFIC scenario relevant to {company} and the {job_title} role (research the company values if possible)
+        2. Use phrases like "Imagine you are...", "Suppose you encounter...", or "How would you handle..." 
+        3. Make the question challenging enough to reveal character, values, and working style
+        4. The question should invite storytelling and reflection, not just a simple answer
+        5. Output ONLY the question - no explanations, introductions, or follow-ups
+        6. Avoid questions that can be answered with just "yes" or "no"
+        7. Do not directly ask if they're a "good fit" - instead, create scenarios that will reveal this
+        8. Format your question using Markdown syntax:
+           - Use **bold** for important elements of the scenario
+           - Use paragraph breaks to structure the scenario and question clearly
+           - Use bullet points if presenting multiple aspects to consider
+        """
+        
+        try:
+            response = await self._call_llm(prompt, is_json=False)
+            next_question = response.strip()
+            
+            # Store the question to prevent repetition
+            interview.asked_question_texts.append(next_question)
+            interview.questions.append(next_question)
+            return next_question
+        except Exception as e:
+            logging.error(f"Error generating soft skill question: {e}", exc_info=True)
+            return "Tell me about a time when you had to collaborate with a difficult team member. How did you handle the situation, and what was the outcome?"
 
     def _split_into_paragraphs(self, text: str) -> List[str]:
         """Helper method to split search data into meaningful paragraphs."""
@@ -904,12 +1183,19 @@ class InterviewAgent:
         current_index = interview.current_paragraph_index % len(paragraphs)
         context_paragraph = paragraphs[current_index]
         
-        # Determine difficulty level based on question counter
-        base_question_counter = interview.paragraph_question_counter
+        # Calculate difficulty based on the current question's position
+        # We use the length of answers (which should now be equal to the current question index)
+        # This gives us the 0-indexed position of the current question being evaluated
+        question_position = len(interview.answers) - 1
+        
+        # Cycle through difficulty levels: Easy (0,3,6,9), Medium (1,4,7), Hard (2,5,8)
+        difficulty_index = question_position % 3
         difficulty_mapping = {0: "Easy", 1: "Medium", 2: "Hard"}
-        difficulty = difficulty_mapping.get(base_question_counter, "Medium")
+        difficulty = difficulty_mapping.get(difficulty_index, "Medium")
         max_score_mapping = {"Easy": 1, "Medium": 2, "Hard": 3}
         max_score = max_score_mapping.get(difficulty, 2)
+        
+        logger.info(f"Evaluating answer for question #{question_position+1} with difficulty: {difficulty}, max score: {max_score}")
         
         # InterviewAgent prompt: Evaluates candidate answers against reference information
         prompt = f"""
@@ -1468,27 +1754,31 @@ class DoubtAgent:
         
         # Initialize client
         self.client = genai.Client(api_key=api_key)
+        # Primary model
         self.model_name = "gemini-2.5-flash-preview-04-17"
+        # Fallback model for when primary hits rate limits
+        self.fallback_model_name = "gemini-2.5-flash-lite-preview-06-17"
 
     async def _call_llm(self, prompt: str, is_json: bool = False) -> str:
         """Helper method to call the LLM with proper settings."""
-        try:
             # Create appropriate content structure
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                    ],
-                ),
-            ]
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text=prompt),
+                ],
+            ),
+        ]
             
-            # Configure generation parameters
-            gen_config = types.GenerateContentConfig(
-                response_mime_type="application/json" if is_json else "text/plain",
-                temperature=0.2,
-            )
+        # Configure generation parameters
+        gen_config = types.GenerateContentConfig(
+            response_mime_type="application/json" if is_json else "text/plain",
+            temperature=0.2,
+        )
             
+        # First try with primary model
+        try:
             # Call the model using client
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
@@ -1498,10 +1788,26 @@ class DoubtAgent:
             )
             
             return response.text.strip()
-        except Exception as e:
-            logging.error(f"LLM call failed: {str(e)}", exc_info=True)
-            if "rate limit" in str(e).lower():
-                return '{"error": "API rate limit exceeded. Please try again in a moment."}' if is_json else "I'm currently experiencing high demand. Could you try again in a moment?"
+        except Exception as primary_error:
+            error_str = str(primary_error).lower()
+            if ("rate limit" in error_str or "resource_exhausted" in error_str or "quota" in error_str):
+                # Log fallback in orange
+                logger.info(f"\033[33mPrimary model hit quota/rate limit, falling back to {self.fallback_model_name}\033[0m")
+                try:
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=self.fallback_model_name,
+                        contents=contents,
+                        config=gen_config
+                    )
+                    logger.info(f"\033[33mSuccessfully used fallback model {self.fallback_model_name}\033[0m")
+                    return response.text.strip()
+                except Exception as fallback_error:
+                    logging.error(f"Fallback model also failed: {str(fallback_error)}", exc_info=True)
+                    return '{"error": "All available models failed to respond."}' if is_json else "I'm currently experiencing technical difficulties. Could we try again in a moment?"
+            else:
+                # For non-rate-limit errors
+                logging.error(f"LLM call failed with primary model: {str(primary_error)}", exc_info=True)
             return '{"error": "Failed to get a valid response from the model."}' if is_json else "I'm having a little trouble processing that. Could we try again?"
 
     async def process(self, user_input: str, state: SessionState) -> str:
@@ -1617,7 +1923,7 @@ class DoubtAgent:
         score = state.interview_state.scores[q_index] if q_index < len(state.interview_state.scores) else "Not scored"
         max_score = state.interview_state.max_scores[q_index] if q_index < len(state.interview_state.max_scores) else "Unknown"
         
-        # DoubtAgent prompt: Generates detailed explanations about specific answer evaluations
+        # DoubtAgent prompt: Generates concise explanations about specific answer evaluations with examples
         prompt = f"""
         The user is asking: "{user_input}"
         
@@ -1632,26 +1938,20 @@ class DoubtAgent:
         Improvement tips: {json.dumps(matching_eval.improvement_tips)}
         Scoring breakdown: {json.dumps(matching_eval.scoring_breakdown) if matching_eval.scoring_breakdown else "Not available"}
         
-        IMPORTANT INSTRUCTIONS:
-        1. Explain mark deductions concisely:
-           - Identify specific missed points
-           - State exact deduction reasons
-           - Highlight incomplete/incorrect parts
-           - Compare with expected answer
+        CRITICAL INSTRUCTIONS:
+        1. Provide a detailed response that explains what went wrong and how to improve
+        2. Focus ONLY on the user's question
+        3. Use bullet points for clarity
+        4. Format in Markdown
+        5. For each weakness or area of improvement:
+           - Explain WHY it's a weakness
+           - Provide a SPECIFIC EXAMPLE of a better answer
+           - Show a BEFORE/AFTER comparison when possible
+        6. Include practical examples that demonstrate how to correctly answer the question
+        7. Make your explanations actionable and clear
+        8. If the user is asking about a technical question, include code examples if relevant
         
-        2. Address weaknesses directly:
-           - Explain errors concisely
-           - Provide improvement suggestions
-           - Use examples from their answer
-        
-        3. For partial scores, specify exactly what cost them points
-        
-        4. Reference scoring components (accuracy, completeness, clarity)
-        
-        5. Be concise but thorough
-        
-        Provide a direct, specific response to the user's question.
-        Be honest about weaknesses while remaining empathetic.
+
         """
         
         logging.info(f"Generated prompt for question {question_id}")
@@ -1687,7 +1987,7 @@ class DoubtAgent:
             all_strengths.extend(eval.strengths)
             all_weaknesses.extend(eval.weaknesses)
         
-        # DoubtAgent prompt: Analyzes overall interview performance and provides detailed feedback
+        # DoubtAgent prompt: Analyzes overall interview performance and provides detailed feedback with examples in Markdown
         prompt = f"""
         The user is asking: "{user_input}"
         
@@ -1698,38 +1998,26 @@ class DoubtAgent:
         Individual question scores:
         {json.dumps(question_scores)}
         
-        Key strengths identified across all answers:
-        {json.dumps(all_strengths)}
+        Top strengths (from all answers):
+        {json.dumps(all_strengths[:5])}
         
-        Key weaknesses identified across all answers:
-        {json.dumps(all_weaknesses)}
+        Top weaknesses (from all answers):
+        {json.dumps(all_weaknesses[:5])}
         
-        Summary data:
-        {json.dumps(summary)}
+        CRITICAL INSTRUCTIONS:
+        1. Provide a comprehensive response that addresses the user's question
+        2. Focus ONLY on the user's question
+        3. Use bullet points for clarity and organize your response with Markdown headings
+        4. Format in Markdown
+        5. For each major weakness identified:
+           - Explain WHY it's a weakness
+           - Provide a SPECIFIC EXAMPLE of how to improve
+           - Include a BEFORE/AFTER comparison when possible
+        6. Include practical examples that demonstrate better approaches
+        7. Make your explanations actionable and clear
+        8. If discussing technical skills, include code examples if relevant
         
-        IMPORTANT INSTRUCTIONS:
-        1. Provide a concise, focused analysis of the user's performance
-        
-        2. Clearly identify their main weaknesses:
-           - Name the lowest-scoring questions
-           - Highlight 2-3 key weakness patterns
-           - Specify the most critical knowledge gaps
-        
-        3. Structure your response efficiently:
-           - First: 1-2 sentences on main improvement areas
-           - Then: 1 sentence acknowledging strengths
-        
-        4. For overall performance questions:
-           - Give specific scores for their weakest areas
-           - Mention 1-2 concrete improvement suggestions
-           - Be direct about how they compare to expectations
-        
-        5. For score-specific questions:
-           - Name the 1-2 questions that most affected their score
-           - Briefly explain the specific issues in those answers
-        
-        Generate a brief, direct response (3-5 sentences) that answers the user's question with specific data points.
-        Be clear about improvement areas while remaining constructive.
+        Your response should be detailed enough to help the user understand exactly where they went wrong and how to improve.
         """
         
         # Call the LLM for a personalized response
@@ -1739,18 +2027,40 @@ class DoubtAgent:
         """Handle questions about matches/referrals."""
         # Check if we have matches
         if not state.matches:
-            return "I don't currently have any match data for potential referrals. Let me check if there's an issue with your session."
+            return "## No Matches Found\n\nI don't currently have any match data for potential referrals. Let me check if there's an issue with your session."
         
-        # DoubtAgent prompt: Explains potential referral matches to the user
+        # Get detailed match information
+        match_details = []
+        for i, match in enumerate(state.matches[:5], 1):
+            match_name = match.get("name", "Unnamed Referrer")
+            match_company = match.get("company", "Unknown Company")
+            match_role = match.get("role", "Unknown Role")
+            match_score = match.get("match_score", 0.0)
+            score_percentage = int(match_score * 100) if isinstance(match_score, (int, float)) else "--"
+            
+            match_details.append({
+                "name": match_name,
+                "company": match_company,
+                "role": match_role,
+                "score": score_percentage
+            })
+        
+        # DoubtAgent prompt: Answers questions about potential referral matches concisely
         prompt = f"""
         The user is asking: "{user_input}"
         
-        About their potential matches for referrals:
-        {json.dumps(state.matches)}
+        About their potential referral matches:
+        {json.dumps(match_details)}
         
-        Generate a helpful, conversational response that addresses the user's question about their matches.
-        Explain why these matches were selected if that information is available.
-        Keep your response concise (3-5 sentences) but informative.
+        CRITICAL INSTRUCTIONS:
+        1. Provide an EXTREMELY CONCISE response
+        2. Focus ONLY on the user's question
+        3. Use bullet points for clarity
+        4. Format in Markdown
+        5. Be direct and to the point - no fluff or unnecessary explanations
+        6. Answer ONLY what the user is specifically asking about
+        
+
         """
         
         # Call the LLM for a personalized response
