@@ -1959,19 +1959,17 @@ class DoubtAgent:
         Scoring breakdown: {json.dumps(matching_eval.scoring_breakdown) if matching_eval.scoring_breakdown else "Not available"}
         
         CRITICAL INSTRUCTIONS:
-        1. Provide a detailed response that explains what went wrong and how to improve
-        2. Focus ONLY on the user's question
-        3. Use bullet points for clarity
-        4. Format in Markdown
+        1. Provide a detailed response that explains what went wrong and how to improve, but keep it concise.
+        2. Focus ONLY on the user's question.
+        3. Use bullet points for clarity.
+        4. Format in Markdown.
         5. For each weakness or area of improvement:
-           - Explain WHY it's a weakness
-           - Provide a SPECIFIC EXAMPLE of a better answer
-           - Show a BEFORE/AFTER comparison when possible
-        6. Include practical examples that demonstrate how to correctly answer the question
-        7. Make your explanations actionable and clear
-        8. If the user is asking about a technical question, include code examples if relevant
-        
-
+           - Explain WHY it's a weakness (1-2 sentences max)
+           - Provide ONE specific example of a better answer.
+           - If possible, show a BEFORE/AFTER comparison (keep it brief).
+        6. Limit your response to a maximum of 6 bullet points or 120 words.
+        7. Make your explanations actionable and clear, but do not write more than necessary.
+        8. If the user is asking about a technical question, include a code example only if it adds real value.
         """
         
         logging.info(f"Generated prompt for question {question_id}")
@@ -2025,19 +2023,17 @@ class DoubtAgent:
         {json.dumps(all_weaknesses[:5])}
         
         CRITICAL INSTRUCTIONS:
-        1. Provide a comprehensive response that addresses the user's question
-        2. Focus ONLY on the user's question
-        3. Use bullet points for clarity and organize your response with Markdown headings
-        4. Format in Markdown
-        5. For each major weakness identified:
-           - Explain WHY it's a weakness
-           - Provide a SPECIFIC EXAMPLE of how to improve
-           - Include a BEFORE/AFTER comparison when possible
-        6. Include practical examples that demonstrate better approaches
-        7. Make your explanations actionable and clear
-        8. If discussing technical skills, include code examples if relevant
-        
-        Your response should be detailed enough to help the user understand exactly where they went wrong and how to improve.
+        1. Provide a detailed response that explains what went wrong and how to improve, but keep it concise.
+        2. Focus ONLY on the user's question.
+        3. Use bullet points for clarity.
+        4. Format in Markdown.
+        5. For each weakness or area of improvement:
+           - Explain WHY it's a weakness (1-2 sentences max)
+           - Provide ONE specific example of a better answer.
+           - If possible, show a BEFORE/AFTER comparison (keep it brief).
+        6. Limit your response to a maximum of 6 bullet points or 120 words.
+        7. Make your explanations actionable and clear, but do not write more than necessary.
+        8. If discussing technical skills, include a code example only if it adds real value.
         """
         
         # Call the LLM for a personalized response
