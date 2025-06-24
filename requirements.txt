@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 python-dotenv
+google-genai
 google-generativeai
 pymongo
 httpx
