@@ -63,7 +63,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict this in production
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -243,7 +243,7 @@ async def handle_matching(request: MatchingRequest):
 def shutdown_event():
     close_db_connection()
 
-# For local development only - not used in production/Vercel
+# For local development or when directly invoked
 if __name__ == "__main__":
     logger.info("Starting FastAPI server...")
     port = int(os.getenv("PORT", 8001))
