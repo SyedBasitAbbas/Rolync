@@ -43,7 +43,7 @@ class ProfilingAgent:
             "name": "Ask for the user's full name in a friendly, professional tone.",
             "target_company": "Ask for the name of the company the user is interested in (focus on ONE specific company).",
             "job_title": "Ask for the specific job title the user is seeking (e.g., 'AI Engineer', 'Product Manager').",
-            "domain": "Ask about their area of expertise or department of interest (e.g., 'Machine Learning', 'Product Management', 'Data Science', 'Software Engineering', 'Marketing', 'Finance').",
+            "domain": "Ask the user to select your domain of interest from the following options: Finance, Operations, HR, Marketing, IT.",
             "user_experience": "Ask for a brief summary of the user's relevant work experience or background.",
             "user_long_term_objective": "Ask about the user's long-term career objectives or aspirations."
         }
@@ -734,6 +734,7 @@ class InterviewAgent:
         2. Soft skills valued for {job_title} positions at {company}
         3. Team structure and collaboration approaches at {company}
         4. Leadership style and management philosophy at {company}
+        5. Interview process and typical questions for a {job_title} role at {company}
         
         For each search query, paste the actual search query you use and then summarize the information found.
         
@@ -808,26 +809,14 @@ class InterviewAgent:
                 
                 TECHNICAL SEARCHES:
                 1. "{company} {job_title} technical skills"
-                2. "{company} {job_title} technologies used"
+                2. "{company} {job_title} technical interview questions"
                 
-                SOFT SKILLS SEARCHES:
-                1. "{company} culture values"
-                2. "{company} work environment"
+                SOFT-SKILLS SEARCHES:
+                1. "{company} company culture"
+                2. "{company} {job_title} soft skills"
+                3. "{company} interview process for {job_title}"
                 
-                For each search, provide the results you find, summarized in a clear format.
-                
-                Structure your response in three clearly separated sections with these exact headings:
-                
-                [DOMAIN-SPECIFIC]
-                (Include all domain-specific information here)
-                
-                [TECHNICAL]
-                (Include all technical information here)
-                
-                [SOFT-SKILLS]
-                (Include all soft skills and culture information here)
-                
-                Do not proceed without using the Google Search tool.
+                For each, provide a detailed summary of the information found.
                 """
                 
                 contents = [
@@ -1102,217 +1091,144 @@ class InterviewAgent:
             return "I'm having trouble formulating my next domain-specific question. Could you tell me about your experience with this type of role?"
 
     async def _generate_technical_question(self, state: SessionState) -> str:
-        """Generate a technical question based on the job role and company."""
+        """Generate a technical question based on the search data."""
+        
         interview = state.interview_state
-        job_title = state.profiling_state.user_data.get('job_title', 'the role')
-        company = state.profiling_state.user_data.get('target_company', 'the company')
-        
-        # Calculate difficulty based on total questions asked across all categories
-        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
-        
-        # Cycle through difficulty levels: Easy (0,3,6,9), Medium (1,4,7), Hard (2,5,8)
-        difficulty_index = total_questions_asked % 3
-        difficulty_levels = {0: "Easy", 1: "Medium", 2: "Hard"}
-        difficulty = difficulty_levels[difficulty_index]
-        
-        logger.info(f"Generating technical question #{interview.technical_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
-        
-        # Use technical data instead of general search data
-        tech_data = state.search_state.technical_data
+        technical_data = state.search_state.technical_data
+        soft_skills_data = state.search_state.soft_skills_data
         
         # Fallback to general search data if technical data is not available
-        if not tech_data:
-            tech_data = state.search_state.search_data
+        if not technical_data:
+            technical_data = state.search_state.search_data
             logging.warning("Technical data not available, falling back to general search data")
+
+        if not soft_skills_data:
+            soft_skills_data = "No specific data on soft skills or interview process found."
+            
+        paragraphs = self._split_into_paragraphs(technical_data)
         
-        # Extract technical context from search data
-        tech_context = ""
+        if not paragraphs:
+            return "Based on your experience, could you describe a complex technical challenge you've faced and how you solved it?"
+
+        # Determine difficulty based on question progression
+        difficulty = "easy"
+        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
+        if total_questions_asked > (self.MAX_QUESTIONS / 2):
+            difficulty = "hard"
+        elif total_questions_asked > (self.MAX_QUESTIONS / 4):
+            difficulty = "medium"
+            
+        logging.info(f"Generating technical question #{interview.technical_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
+
+        # Cycle through paragraphs
+        current_index = interview.technical_questions_asked % len(paragraphs)
+        context_paragraph = paragraphs[current_index]
+        logger.info(f"Technical Q uses paragraph index: {current_index}")
         
-        # Split into paragraphs and select one based on question count
-        paragraphs = self._split_into_paragraphs(tech_data)
-        if paragraphs:
-            current_index = interview.technical_questions_asked % len(paragraphs)
-            tech_context = paragraphs[current_index]
-            logger.info(f"Technical Q uses paragraph index: {current_index}")
-        
-        # Previous questions to avoid repetition
-        previous_questions = interview.asked_question_texts
-        
-        # Create prompt for technical question generation
+        profile = state.profiling_state.user_data
+        job_title = profile.get('job_title', 'the specified role')
+        company = profile.get('target_company', 'the specified company')
+        domain = profile.get('domain', 'general')
+        experience = profile.get('user_experience', 'Not provided')
+        objective = profile.get('user_long_term_objective', 'Not provided')
+
         prompt = f"""
-        You are an expert technical interviewer for {company}, preparing to interview a candidate for a {job_title} position. Your task is to generate one technical interview question.
+        You are an expert interviewer for {company}, preparing to interview a candidate for a {job_title} position in the {domain} department/domain.
+        Your task is to generate one insightful, scenario-based interview question that focuses on technical skills.
 
         **CANDIDATE PROFILE:**
-        - Role: {job_title}
-        - Target Company: {company}
+        - Job Title: {job_title}
+        - Department/Domain: {domain}
+        - Experience Summary: {experience}
+        - Career Goal: {objective}
 
-        **TECHNICAL CONTEXT:**
-        {tech_context}
+        **TECHNICAL CONTEXT (Obtained from internal research documents):**
+        {technical_data}
 
-        **PREVIOUSLY ASKED QUESTIONS:**
-        {previous_questions}
+        **INTERVIEW PROCESS CONTEXT (Obtained from internal research documents):**
+        {soft_skills_data}
 
-        **YOUR TASK:**
-        Generate ONE technical interview question that:
+        **GUIDELINES:**
+        1.  **Generate ONE question** based on the provided context.
+        2.  **Be Specific:** Reference technologies, tools, or problems from the TECHNICAL CONTEXT.
+        3.  **Scenario-Based:** Frame the question as a hypothetical problem or scenario.
+        4.  **Test Technical Skills:** The question should test problem-solving, design, or coding skills.
+        5.  **Difficulty Level: {difficulty}**. Adjust the complexity of the question accordingly.
+        6.  **If the context includes details about the company's interview process, try to frame your question in a way that aligns with it (e.g., if they favor whiteboarding, ask a question suitable for that format).**
+
+        **Do not ask for definitions.** Ask how the candidate would apply concepts.
         
-        1. Assesses specific technical skills relevant to a {job_title} position
-        2. Focuses on practical problem-solving rather than just theoretical knowledge
-        3. Is challenging but reasonable for a qualified candidate
-        4. Is NOT similar to any previously asked questions
-        5. Is relevant to the technologies or technical challenges that would be faced in this role
-        6. Is concise and direct - avoid unnecessarily long scenarios
-
-        **QUESTION TYPES TO CONSIDER:**
-        - Algorithmic problem-solving
-        - System design
-        - Coding approach to specific problems
-        - Technical trade-offs and decision-making
-        - Debugging scenarios
-        - Performance optimization
-
-        **CRITICAL RULES:**
-        1. Make the question specific to the {job_title} role, not generic.
-        2. Ensure the question has a clear technical focus.
-        3. The question should be answerable in 2-3 minutes verbally.
-        4. Output ONLY the question - no explanations, introductions, or follow-ups.
-        5. Do not ask about specific programming languages unless they're central to the role.
-        6. Make sure the question has real-world applicability.
-        7. Format your question using Markdown syntax:
-           - Use **bold** for key technical terms
-           - Use `code blocks` for any code snippets or technical syntax
-           - Use bullet points for listing options if needed
-           - Structure multi-part questions clearly with numbered points
+        Your response should contain ONLY the question text, without any preamble, conversational filler, or explanation.
         """
         
-        try:
-            response = await self._call_llm(prompt, is_json=False)
-            next_question = response.strip()
-            
-            # Store the question to prevent repetition
-            interview.asked_question_texts.append(next_question)
-            interview.questions.append(next_question)
-            return next_question
-        except Exception as e:
-            logging.error(f"Error generating technical question: {e}", exc_info=True)
-            return "Let me ask you a technical question: How would you approach troubleshooting a complex system issue when you have limited information about the root cause?"
+        return await self._call_llm(prompt)
 
     async def _generate_soft_skill_question(self, state: SessionState) -> str:
-        """Generate a soft skill question focused on cultural fit and interpersonal skills."""
+        """Generate a soft-skill question based on the search data."""
+        
         interview = state.interview_state
-        job_title = state.profiling_state.user_data.get('job_title', 'the role')
-        company = state.profiling_state.user_data.get('target_company', 'the company')
-        
-        # Calculate difficulty based on total questions asked across all categories
-        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
-        
-        # Cycle through difficulty levels: Easy (0,3,6,9), Medium (1,4,7), Hard (2,5,8)
-        difficulty_index = total_questions_asked % 3
-        difficulty_levels = {0: "Easy", 1: "Medium", 2: "Hard"}
-        difficulty = difficulty_levels[difficulty_index]
-        
-        logger.info(f"Generating soft skill question #{interview.soft_skill_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
-        
-        # Use soft skills data instead of general search data
         soft_skills_data = state.search_state.soft_skills_data
         
         # Fallback to general search data if soft skills data is not available
         if not soft_skills_data:
             soft_skills_data = state.search_state.search_data
             logging.warning("Soft skills data not available, falling back to general search data")
-        
-        # Get context paragraph for soft skill
-        soft_context = ""
+
         paragraphs = self._split_into_paragraphs(soft_skills_data)
-        if paragraphs:
-            current_index = interview.soft_skill_questions_asked % len(paragraphs)
-            soft_context = paragraphs[current_index]
-            logger.info(f"Soft Skill Q uses paragraph index: {current_index}")
         
-        # Previous questions to avoid repetition
-        previous_questions = interview.asked_question_texts
+        if not paragraphs:
+            return "Can you tell me about a time you had a disagreement with a coworker and how you resolved it?"
+
+        # Determine difficulty based on question progression
+        difficulty = "easy"
+        total_questions_asked = interview.domain_questions_asked + interview.technical_questions_asked + interview.soft_skill_questions_asked
+        if total_questions_asked > (self.MAX_QUESTIONS / 2):
+            difficulty = "hard"
+        elif total_questions_asked > (self.MAX_QUESTIONS / 4):
+            difficulty = "medium"
+            
+        logging.info(f"Generating soft skill question #{interview.soft_skill_questions_asked+1} with difficulty: {difficulty} (based on total questions: {total_questions_asked})")
+
+        # Cycle through paragraphs
+        current_index = interview.soft_skill_questions_asked % len(paragraphs)
+        context_paragraph = paragraphs[current_index]
+        logger.info(f"Soft skill Q uses paragraph index: {current_index}")
         
-        # Define soft skill question categories
-        soft_skill_categories = [
-            "teamwork", "communication", "conflict resolution", 
-            "adaptability", "leadership", "time management",
-            "work ethic", "problem solving", "cultural fit"
-        ]
-        
-        # Select a category based on questions asked so far
-        category_index = interview.soft_skill_questions_asked % len(soft_skill_categories)
-        selected_category = soft_skill_categories[category_index]
-        
-        # Example scenarios for different categories to enhance question quality
-        example_scenarios = {
-            "teamwork": f"Imagine you're working on a cross-functional project at {company} where team members have conflicting priorities...",
-            "communication": f"Suppose you need to explain a complex technical concept to non-technical stakeholders at {company}...",
-            "conflict resolution": f"Picture a situation where you and a colleague at {company} strongly disagree on the approach to a critical project...",
-            "adaptability": f"Consider that {company} is going through a major strategic shift that affects your role as {job_title}...",
-            "leadership": f"Envision that you're leading a team at {company} through a challenging product launch with tight deadlines...",
-            "time management": f"Imagine you're juggling multiple high-priority projects at {company} with competing deadlines...",
-            "work ethic": f"At {company}, you notice a colleague taking shortcuts that might impact product quality...",
-            "problem solving": f"You discover a significant issue with a {company} product just before launch...",
-            "cultural fit": f"Consider that {company} values [research their values if possible] in all aspects of work..."
-        }
-        
-        scenario_example = example_scenarios.get(selected_category, f"Imagine a challenging situation as a {job_title} at {company}...")
-        
-        # Create prompt for soft skill question generation
+        profile = state.profiling_state.user_data
+        job_title = profile.get('job_title', 'the specified role')
+        company = profile.get('target_company', 'the specified company')
+        domain = profile.get('domain', 'general')
+        experience = profile.get('user_experience', 'Not provided')
+        objective = profile.get('user_long_term_objective', 'Not provided')
+
         prompt = f"""
-        You are an expert interviewer for {company}, preparing to interview a candidate for a {job_title} position. Your task is to generate one scenario-based soft skill interview question.
-
-        **CANDIDATE PROFILE:**
-        - Role: {job_title}
-        - Target Company: {company}
-
-        **COMPANY CULTURE & SOFT SKILLS CONTEXT:**
-        {soft_context}
-
-        **PREVIOUSLY ASKED QUESTIONS:**
-        {previous_questions}
-
-        **CATEGORY:**
-        {selected_category}
-
-        **EXAMPLE SCENARIO STRUCTURE (DO NOT USE DIRECTLY):**
-        {scenario_example}
-
-        **YOUR TASK:**
-        Generate ONE compelling, scenario-based soft skill interview question that:
+        You are an expert interviewer for {company}, preparing to interview a candidate for a {job_title} position in the {domain} department/domain. 
+        Your task is to generate one insightful, behavioral interview question that focuses on soft skills and cultural fit.
         
-        1. Places the candidate in a realistic, specific work situation at {company}
-        2. Indirectly evaluates their culture fit without explicitly asking about it
-        3. Reveals how they would handle challenging interpersonal or workplace situations
-        4. Provides enough context to make the scenario feel authentic and company-specific
-        5. Is NOT similar to any previously asked questions
-        6. Allows you to evaluate whether they would be a good fit for the company culture and work environment
-        7. Is concise and direct - avoid unnecessarily long scenarios
+        **CANDIDATE PROFILE:**
+        - Job Title: {job_title}
+        - Department/Domain: {domain}
+        - Experience Summary: {experience}
+        - Career Goal: {objective}
 
-        **CRITICAL RULES:**
-        1. Create a SPECIFIC scenario relevant to {company} and the {job_title} role based on the company culture information provided
-        2. Use phrases like "Imagine you are...", "Suppose you encounter...", or "How would you handle..." 
-        3. Make the question challenging enough to reveal character, values, and working style
-        4. The question should invite storytelling and reflection, not just a simple answer
-        5. Output ONLY the question - no explanations, introductions, or follow-ups
-        6. Avoid questions that can be answered with just "yes" or "no"
-        7. Do not directly ask if they're a "good fit" - instead, create scenarios that will reveal this
-        8. Format your question using Markdown syntax:
-           - Use **bold** for important elements of the scenario
-           - Use paragraph breaks to structure the scenario and question clearly
-           - Use bullet points if presenting multiple aspects to consider
+        **SOFT SKILLS & CULTURE CONTEXT (Obtained from internal research documents):**
+        {soft_skills_data}
+        
+        **GUIDELINES:**
+        1.  **Generate ONE question** based on the provided context.
+        2.  **Behavioral Focus:** Ask for specific examples from the candidate's past experiences. Instead of always using "Tell me about a time when...", vary your phrasing. Use alternatives like:
+            - "Can you walk me through a situation where..."
+            - "Describe a challenging project you were a part of. What was your specific role and how did you handle..."
+            - "How would you approach a situation where..."
+            - "Give me an example of a time you had to influence a team decision. What was your approach?"
+        3.  **Align with Culture:** The question should relate to the values, team structure, or work environment described in the SOFT SKILLS & CULTURE CONTEXT.
+        4.  **Difficulty Level: {difficulty}**. Adjust the complexity of the scenario accordingly.
+        5.  **If the context includes details about the company's interview process, try to frame your question in a way that aligns with it.**
+
+        Your response should contain ONLY the question text, without any preamble, conversational filler, or explanation.
         """
         
-        try:
-            response = await self._call_llm(prompt, is_json=False)
-            next_question = response.strip()
-            
-            # Store the question to prevent repetition
-            interview.asked_question_texts.append(next_question)
-            interview.questions.append(next_question)
-            return next_question
-        except Exception as e:
-            logging.error(f"Error generating soft skill question: {e}", exc_info=True)
-            return "Tell me about a time when you had to collaborate with a difficult team member. How did you handle the situation, and what was the outcome?"
+        return await self._call_llm(prompt)
 
     def _split_into_paragraphs(self, text: str) -> List[str]:
         """Helper method to split search data into meaningful paragraphs."""
