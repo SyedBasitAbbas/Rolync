@@ -73,7 +73,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "Welcome to the Rolync API V56. Please use the /docs endpoint for documentation."}
+    return {"message": "Welcome to the Rolync API V57. Please use the /docs endpoint for documentation."}
 
 @app.post("/user/chat", response_model=ChatResponse)
 async def handle_chat(request: ChatRequest):
