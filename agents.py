@@ -1,5 +1,3 @@
-# Placeholder for agents 
-
 import os
 import asyncio
 import re
@@ -1969,6 +1967,16 @@ class DoubtAgent:
         logging.info(f"Context extraction - Questions available: {question_count}")
         logging.info(f"Context extraction - User input: '{user_input}'")
         
+        # Get doubt conversation history for context
+        doubt_history = state.doubt_conversation_history
+        formatted_doubt_history = ""
+        if doubt_history and len(doubt_history) > 0:
+            formatted_doubt_history = "Previous doubt conversation (most recent exchanges):\n"
+            # Limit to last 4 exchanges for context
+            for entry in doubt_history[-4:]:
+                if "role" in entry and "content" in entry:
+                    formatted_doubt_history += f"{entry['role'].capitalize()}: {entry['content'][:100]}...\n"
+        
         # DoubtAgent prompt: Analyzes user questions to determine what they're asking about
         prompt = f"""
         Analyze this user question: "{user_input}"
@@ -1977,17 +1985,24 @@ class DoubtAgent:
         The questions were:
         {json.dumps(questions_with_ids)}
         
+        {formatted_doubt_history}
+        
         Determine:
         1. Is the user asking about a specific question/answer? If so, which one (Q1, Q2, Q3, etc.)?
+           - Look for explicit references like "first question", "question 2", etc.
+           - Consider any references to question content in determining which question they're referring to
+           - Use the conversation history to identify references to previously discussed questions
         2. Is this a general performance question about overall scores or skills?
         3. Is this about matching or referrals?
+        4. Is the user asking for a model/ideal/perfect answer to a specific question?
         
         Return a JSON with:
         {{
             "question_id": "Q1" or "Q2" or null if not specific,
             "is_general_performance": true/false,
             "is_about_matches": true/false,
-            "query_type": "specific_answer", "general_performance", "matches", or "out_of_scope"
+            "is_model_answer_request": true/false,
+            "query_type": "specific_answer", "general_performance", "matches", "model_answer" or "out_of_scope"
         }}
         """
         
@@ -2032,6 +2047,25 @@ class DoubtAgent:
         score = state.interview_state.scores[q_index] if q_index < len(state.interview_state.scores) else "Not scored"
         max_score = state.interview_state.max_scores[q_index] if q_index < len(state.interview_state.max_scores) else "Unknown"
         
+        # Get doubt conversation history to include context about previous questions
+        doubt_history = state.doubt_conversation_history
+        formatted_doubt_history = ""
+        if doubt_history and len(doubt_history) > 0:
+            formatted_doubt_history = "Previous doubt conversation:\n"
+            # Limit to last 6 exchanges for context
+            for entry in doubt_history[-6:]:
+                if "role" in entry and "content" in entry:
+                    formatted_doubt_history += f"{entry['role'].capitalize()}: {entry['content'][:100]}...\n"
+
+        # Check if the user is asking for a model/perfect answer
+        is_model_answer_request = False
+        model_answer_keywords = ["perfect answer", "model answer", "ideal answer", "best answer", "how should i answer", "how would you answer"]
+        user_input_lower = user_input.lower()
+        for keyword in model_answer_keywords:
+            if keyword in user_input_lower:
+                is_model_answer_request = True
+                break
+        
         # DoubtAgent prompt: Generates concise explanations about specific answer evaluations with examples
         prompt = f"""
         The user is asking: "{user_input}"
@@ -2047,18 +2081,30 @@ class DoubtAgent:
         Improvement tips: {json.dumps(matching_eval.improvement_tips)}
         Scoring breakdown: {json.dumps(matching_eval.scoring_breakdown) if matching_eval.scoring_breakdown else "Not available"}
         
+        Previous conversation context:
+        {formatted_doubt_history}
+        
         CRITICAL INSTRUCTIONS:
-        1. Provide a detailed response that explains what went wrong and how to improve, but keep it concise.
-        2. Focus ONLY on the user's question.
-        3. Use bullet points for clarity.
-        4. Format in Markdown.
-        5. For each weakness or area of improvement:
-           - Explain WHY it's a weakness (1-2 sentences max)
-           - Provide ONE specific example of a better answer.
-           - If possible, show a BEFORE/AFTER comparison (keep it brief).
-        6. Limit your response to a maximum of 6 bullet points or 120 words.
-        7. Make your explanations actionable and clear, but do not write more than necessary.
-        8. If the user is asking about a technical question, include a code example only if it adds real value.
+        1. First, determine if the user is asking for a model/perfect answer to the question.
+           - If they are asking for a model answer, provide a detailed example of an ideal response to the original interview question.
+           - The model answer should address all points that would earn full marks, be well-structured, and demonstrate deep understanding.
+           
+        2. If NOT asking for a model answer, provide feedback on their actual answer:
+           - Explain what went wrong and how to improve, but keep it concise.
+           - Focus ONLY on the user's question.
+           - Use bullet points for clarity.
+           - Format in Markdown.
+           - For each weakness or area of improvement:
+             * Explain WHY it's a weakness (1-2 sentences max)
+             * Provide ONE specific example of a better answer.
+             * If possible, show a BEFORE/AFTER comparison (keep it brief).
+             
+        3. Limit your response to a maximum of 6 bullet points or 150 words.
+        4. Make your explanations actionable and clear, but do not write more than necessary.
+        5. If the user is asking about a technical question, include a code example only if it adds real value.
+        6. Use the conversation history to understand which specific question or aspect the user is referring to.
+        
+        {'PLEASE PROVIDE A MODEL/PERFECT ANSWER to the interview question.' if is_model_answer_request else 'Provide feedback on their answer.'}
         """
         
         logging.info(f"Generated prompt for question {question_id}")
