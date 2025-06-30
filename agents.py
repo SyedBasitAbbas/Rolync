@@ -937,6 +937,8 @@ class InterviewAgent:
             else:
                 # Continue with domain-specific questions
                 next_question = await self._generate_domain_question(state)
+                interview.asked_question_texts.append(next_question)
+                interview.questions.append(next_question)
                 interview.domain_questions_asked += 1
                 interview.question_categories.append("domain_specific")
                 logger.info(f"Generated domain-specific question ({interview.domain_questions_asked}/{interview.domain_questions_limit}) for session {state.session_id}")
@@ -952,6 +954,8 @@ class InterviewAgent:
             else:
                 # Continue with technical questions
                 next_question = await self._generate_technical_question(state)
+                interview.asked_question_texts.append(next_question)
+                interview.questions.append(next_question)
                 interview.technical_questions_asked += 1
                 interview.question_categories.append("technical")
                 logger.info(f"Generated technical question ({interview.technical_questions_asked}/{interview.technical_questions_limit}) for session {state.session_id}")
@@ -967,6 +971,8 @@ class InterviewAgent:
             else:
                 # Continue with soft skill questions
                 next_question = await self._generate_soft_skill_question(state)
+                interview.asked_question_texts.append(next_question)
+                interview.questions.append(next_question)
                 interview.soft_skill_questions_asked += 1
                 interview.question_categories.append("soft_skill")
                 logger.info(f"Generated soft skill question ({interview.soft_skill_questions_asked}/{interview.soft_skill_questions_limit}) for session {state.session_id}")
@@ -1082,9 +1088,6 @@ class InterviewAgent:
             response = await self._call_llm(prompt, is_json=False)
             next_question = response.strip()
             
-            # Store the question to prevent repetition
-            interview.asked_question_texts.append(next_question)
-            interview.questions.append(next_question)
             return next_question
         except Exception as e:
             logging.error(f"Error generating domain question: {e}", exc_info=True)
@@ -1142,14 +1145,16 @@ class InterviewAgent:
         - Experience Summary: {experience}
         - Career Goal: {objective}
 
-        **TECHNICAL CONTEXT (Obtained from internal research documents):**
-        {technical_data}
+        **TECHNICAL CONTEXT (Use this specific information to frame your question):**
+        ---
+        {context_paragraph}
+        ---
 
-        **INTERVIEW PROCESS CONTEXT (Obtained from internal research documents):**
-        {soft_skills_data}
+        **PREVIOUSLY ASKED QUESTIONS (Do not repeat these):**
+        {interview.asked_question_texts}
 
         **GUIDELINES:**
-        1.  **Generate ONE question** based on the provided context.
+        1.  **Generate ONE question** based on the provided **TECHNICAL CONTEXT**.
         2.  **Be Specific:** Reference technologies, tools, or problems from the TECHNICAL CONTEXT.
         3.  **Scenario-Based:** Frame the question as a hypothetical problem or scenario.
         4.  **Test Technical Skills:** The question should test problem-solving, design, or coding skills.
@@ -1161,7 +1166,13 @@ class InterviewAgent:
         Your response should contain ONLY the question text, without any preamble, conversational filler, or explanation.
         """
         
-        return await self._call_llm(prompt)
+        try:
+            response = await self._call_llm(prompt, is_json=False)
+            next_question = response.strip()
+            return next_question
+        except Exception as e:
+            logging.error(f"Error generating technical question: {e}", exc_info=True)
+            return "I'm having trouble formulating my next technical question. Based on your experience, could you describe a complex technical challenge you've faced and how you solved it?"
 
     async def _generate_soft_skill_question(self, state: SessionState) -> str:
         """Generate a soft-skill question based on the search data."""
@@ -1211,11 +1222,16 @@ class InterviewAgent:
         - Experience Summary: {experience}
         - Career Goal: {objective}
 
-        **SOFT SKILLS & CULTURE CONTEXT (Obtained from internal research documents):**
-        {soft_skills_data}
+        **SOFT SKILLS & CULTURE CONTEXT (Use this specific information to frame your question):**
+        ---
+        {context_paragraph}
+        ---
+
+        **PREVIOUSLY ASKED QUESTIONS (Do not repeat these):**
+        {interview.asked_question_texts}
         
         **GUIDELINES:**
-        1.  **Generate ONE question** based on the provided context.
+        1.  **Generate ONE question** based on the provided **SOFT SKILLS & CULTURE CONTEXT**.
         2.  **Behavioral Focus:** Ask for specific examples from the candidate's past experiences. Instead of always using "Tell me about a time when...", vary your phrasing. Use alternatives like:
             - "Can you walk me through a situation where..."
             - "Describe a challenging project you were a part of. What was your specific role and how did you handle..."
@@ -1228,7 +1244,13 @@ class InterviewAgent:
         Your response should contain ONLY the question text, without any preamble, conversational filler, or explanation.
         """
         
-        return await self._call_llm(prompt)
+        try:
+            response = await self._call_llm(prompt, is_json=False)
+            next_question = response.strip()
+            return next_question
+        except Exception as e:
+            logging.error(f"Error generating soft skill question: {e}", exc_info=True)
+            return "I'm having trouble formulating my next soft skill question. Can you tell me about a time you had a disagreement with a coworker and how you resolved it?"
 
     def _split_into_paragraphs(self, text: str) -> List[str]:
         """Helper method to split search data into meaningful paragraphs."""
