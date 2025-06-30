@@ -153,8 +153,6 @@ async def handle_chat(request: ChatRequest):
             logger.info(f"Session {session.session_id} doubt query {session.doubt_queries_count}/{session.doubt_queries_limit}")
             logger.info(f"Doubt conversation history now contains {len(session.doubt_conversation_history)} messages")
     else: # 'summary' or 'complete'
-        bot_reply = "Our interview session is complete. You can ask questions about your evaluation."
-        
         # If stage is 'complete' and should be 'doubts', fix it
         if session.current_stage == 'complete' and session.summary_data:
             logger.info(f"Correcting session stage from 'complete' to 'doubts' for session {session.session_id}")
@@ -165,6 +163,20 @@ async def handle_chat(request: ChatRequest):
                 {"session_id": session.session_id},
                 {"$set": {"current_stage": "doubts"}}
             )
+            
+            # Process as a doubt question instead of showing hardcoded message
+            # Store user's question in conversation history
+            session.doubt_conversation_history.append({"role": "user", "content": request.user_input})
+            
+            # Process the question with DoubtAgent
+            session.doubt_queries_count += 1
+            bot_reply = await doubt_agent.process(request.user_input, session)
+            
+            # Store agent's response in conversation history
+            session.doubt_conversation_history.append({"role": "assistant", "content": bot_reply})
+            
+            logger.info(f"Session {session.session_id} doubt query {session.doubt_queries_count}/{session.doubt_queries_limit}")
+            logger.info(f"Doubt conversation history now contains {len(session.doubt_conversation_history)} messages")
 
     # Save session and ensure 'matches' field is properly set in MongoDB
     if session.matches:
